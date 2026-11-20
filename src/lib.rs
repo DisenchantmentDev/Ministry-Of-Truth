@@ -1,3 +1,5 @@
+//! Desktop notebook for lore-heavy Minecraft roleplay events.
+
 #![warn(clippy::all, rust_2018_idioms)]
 
 mod app;

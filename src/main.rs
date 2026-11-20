@@ -1,3 +1,5 @@
+//! Native entry point for Ministry of Truth.
+
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
@@ -23,6 +25,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Ministry Of Truth",
         native_options,
-        Box::new(|_cc| Ok(Box::<Application>::default())),
+        Box::new(|cc| Ok(Box::new(Application::new(cc)))),
     )
 }

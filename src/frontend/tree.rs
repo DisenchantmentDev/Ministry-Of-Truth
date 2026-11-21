@@ -36,42 +36,73 @@ pub(crate) fn show(
     let tree = build_tree(project);
     merge(
         action,
-        show_node(ui, &tree, open_id, main_view == MainView::Page),
+        show_node(ui, &tree, open_id, main_view == MainView::Page, 0),
     )
 }
 
-fn show_node(ui: &mut egui::Ui, node: &TreeNode, open_id: Option<Uuid>, page_view: bool) -> UiAction {
-    if node.is_dir {
-        show_dir(ui, node, open_id, page_view)
-    } else {
-        show_file(ui, node, open_id, page_view)
+/// Root event name is largest; top-level folders are mid-size; deeper rows share one floor size.
+fn label_size(depth: u8) -> f32 {
+    match depth {
+        0 => 22.0,
+        1 => 16.0,
+        _ => 14.0,
     }
 }
 
-fn show_dir(ui: &mut egui::Ui, node: &TreeNode, open_id: Option<Uuid>, page_view: bool) -> UiAction {
+fn show_node(
+    ui: &mut egui::Ui,
+    node: &TreeNode,
+    open_id: Option<Uuid>,
+    page_view: bool,
+    depth: u8,
+) -> UiAction {
+    if node.is_dir {
+        show_dir(ui, node, open_id, page_view, depth)
+    } else {
+        show_file(ui, node, open_id, page_view, depth)
+    }
+}
+
+fn show_dir(
+    ui: &mut egui::Ui,
+    node: &TreeNode,
+    open_id: Option<Uuid>,
+    page_view: bool,
+    depth: u8,
+) -> UiAction {
     let mut action = UiAction::None;
     let id = ui.id().with(&node.folder);
     let selected = page_view && node.page_id.is_some() && node.page_id == open_id;
     let mut header_action = UiAction::None;
+    let label = egui::RichText::new(&node.name).size(label_size(depth));
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
         .show_header(ui, |ui| {
-            let response = ui.selectable_label(selected, &node.name);
+            let response = ui.selectable_label(selected, label);
             header_action = menu_action(&response, node);
             if header_action.is_none() && response.clicked() {
                 header_action = open_node(node);
             }
         })
         .body(|ui| {
+            let child_depth = depth.saturating_add(1);
             for child in &node.children {
-                action = merge(action, show_node(ui, child, open_id, page_view));
+                let next = show_node(ui, child, open_id, page_view, child_depth);
+                action = merge(std::mem::replace(&mut action, UiAction::None), next);
             }
         });
     merge(header_action, action)
 }
 
-fn show_file(ui: &mut egui::Ui, node: &TreeNode, open_id: Option<Uuid>, page_view: bool) -> UiAction {
+fn show_file(
+    ui: &mut egui::Ui,
+    node: &TreeNode,
+    open_id: Option<Uuid>,
+    page_view: bool,
+    depth: u8,
+) -> UiAction {
     let selected = page_view && node.page_id == open_id;
-    let response = ui.selectable_label(selected, &node.name);
+    let label = egui::RichText::new(&node.name).size(label_size(depth));
+    let response = ui.selectable_label(selected, label);
     let menu = menu_action(&response, node);
     if !menu.is_none() {
         menu
@@ -102,6 +133,11 @@ fn menu_action(response: &egui::Response, node: &TreeNode) -> UiAction {
 
 fn node_menu(ui: &mut egui::Ui, node: &TreeNode) -> UiAction {
     let mut action = UiAction::None;
+    if let Some(id) = node.page_id {
+        if ui.button("Open in window").clicked() {
+            action = UiAction::OpenFloating(id);
+        }
+    }
     if ui.button("New note").clicked() {
         action = create_page_dialog(node, TemplateKind::Note);
     }

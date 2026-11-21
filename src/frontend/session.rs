@@ -4,6 +4,7 @@ use egui_commonmark::CommonMarkCache;
 use uuid::Uuid;
 
 use crate::backend::{Frontmatter, Page};
+use crate::frontend::live_markdown::LiveMarkdownState;
 use crate::frontend::Dialog;
 
 /// Which markdown surface is in the main pane.
@@ -19,12 +20,14 @@ impl Default for MainView {
     }
 }
 
-/// Edit, rendered preview, or both.
+/// How the page body is shown in the main pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditMode {
     Edit,
     Preview,
     Split,
+    /// Styled source editing (live markdown rendering).
+    Live,
 }
 
 impl Default for EditMode {
@@ -85,6 +88,29 @@ impl OpenPage {
     }
 }
 
+/// A page open in a movable, resizable overlay window.
+pub struct FloatingPage {
+    pub open: OpenPage,
+    pub visible: bool,
+    pub mode: EditMode,
+    pub nation_tab: NationTab,
+    pub cache: CommonMarkCache,
+    pub live_markdown: LiveMarkdownState,
+}
+
+impl FloatingPage {
+    pub(crate) fn from_page(page: Page) -> Self {
+        Self {
+            open: OpenPage::from_page(page),
+            visible: true,
+            mode: EditMode::default(),
+            nation_tab: NationTab::default(),
+            cache: CommonMarkCache::default(),
+            live_markdown: LiveMarkdownState::default(),
+        }
+    }
+}
+
 /// Frame-local UI state that is not written into `project.json`.
 pub struct Session {
     pub open: Option<OpenPage>,
@@ -93,6 +119,8 @@ pub struct Session {
     pub dialog: Dialog,
     pub status: String,
     pub cache: CommonMarkCache,
+    pub live_markdown: LiveMarkdownState,
+    pub floating: Vec<FloatingPage>,
     pub new_name: String,
     pub new_date: String,
 }
@@ -106,6 +134,8 @@ impl Default for Session {
             dialog: Dialog::None,
             status: String::new(),
             cache: CommonMarkCache::default(),
+            live_markdown: LiveMarkdownState::default(),
+            floating: Vec::new(),
             new_name: String::new(),
             new_date: String::new(),
         }

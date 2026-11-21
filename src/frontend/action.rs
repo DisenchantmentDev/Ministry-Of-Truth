@@ -46,6 +46,10 @@ impl Default for Dialog {
 pub enum UiAction {
     None,
     OpenPage(Uuid),
+    /// Open (or focus) a page in a floating window over the main editor.
+    OpenFloating(Uuid),
+    /// Save and drop a floating window the user closed.
+    CloseFloating(Uuid),
     OpenFolder(PathBuf),
     ShowTimeline,
     Save,

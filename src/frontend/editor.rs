@@ -4,6 +4,7 @@ use egui_commonmark::CommonMarkCache;
 
 use crate::backend::{PageData, PageKind, Project, TemplateKind};
 use crate::frontend::fields;
+use crate::frontend::live_markdown::{self, LiveMarkdownState};
 use crate::frontend::preview;
 use crate::frontend::session::{EditMode, NationTab, OpenPage};
 use crate::frontend::{Dialog, UiAction};
@@ -15,12 +16,13 @@ pub(crate) fn show(
     mode: &mut EditMode,
     nation_tab: &mut NationTab,
     cache: &mut CommonMarkCache,
+    live_markdown: &mut LiveMarkdownState,
 ) -> UiAction {
     let mut action = UiAction::None;
     egui::ScrollArea::vertical()
         .id_salt("page_scroll")
         .show(ui, |ui| {
-            action = page_contents(ui, project, open, mode, nation_tab, cache);
+            action = page_contents(ui, project, open, mode, nation_tab, cache, live_markdown);
         });
     action
 }
@@ -32,15 +34,19 @@ fn page_contents(
     mode: &mut EditMode,
     nation_tab: &mut NationTab,
     cache: &mut CommonMarkCache,
+    live_markdown: &mut LiveMarkdownState,
 ) -> UiAction {
     ui.label(open.frontmatter.kind().label());
     fields::plain_text(ui, "Title", &mut open.frontmatter.title);
     let mut action = header(ui, project, open);
     ui.separator();
     if open.frontmatter.kind() == PageKind::Nation {
-        action = merge(action, nation_body(ui, project, open, mode, nation_tab, cache));
+        action = merge(
+            action,
+            nation_body(ui, project, open, mode, nation_tab, cache, live_markdown),
+        );
     } else {
-        action = merge(action, notes(ui, project, open, mode, cache));
+        action = merge(action, notes(ui, project, open, mode, cache, live_markdown));
     }
     action
 }
@@ -86,6 +92,7 @@ fn nation_body(
     mode: &mut EditMode,
     nation_tab: &mut NationTab,
     cache: &mut CommonMarkCache,
+    live_markdown: &mut LiveMarkdownState,
 ) -> UiAction {
     ui.horizontal(|ui| {
         if ui
@@ -108,7 +115,7 @@ fn nation_body(
         }
     });
     match *nation_tab {
-        NationTab::Notes => notes(ui, project, open, mode, cache),
+        NationTab::Notes => notes(ui, project, open, mode, cache, live_markdown),
         NationTab::Events => nation_events(ui, project, &open.frontmatter.title),
         NationTab::Relations => nation_relations(ui, project, open),
     }
@@ -150,6 +157,7 @@ fn notes(
     open: &mut OpenPage,
     mode: &mut EditMode,
     cache: &mut CommonMarkCache,
+    live_markdown: &mut LiveMarkdownState,
 ) -> UiAction {
     mode_bar(ui, mode);
     let parent = parent_dir(project, &open.path);
@@ -160,6 +168,9 @@ fn notes(
         }
         EditMode::Preview => preview::show(ui, project, cache, &parent, &open.body),
         EditMode::Split => split_view(ui, project, cache, &parent, &mut open.body),
+        EditMode::Live => {
+            live_markdown::show(ui, project, &parent, &mut open.body, live_markdown)
+        }
     }
 }
 
@@ -176,6 +187,13 @@ fn mode_bar(ui: &mut egui::Ui, mode: &mut EditMode) {
         }
         if ui.selectable_label(*mode == EditMode::Split, "Split").clicked() {
             *mode = EditMode::Split;
+        }
+        if ui
+            .selectable_label(*mode == EditMode::Live, "Live")
+            .on_hover_text("Live markdown rendering")
+            .clicked()
+        {
+            *mode = EditMode::Live;
         }
     });
 }
@@ -197,11 +215,18 @@ fn split_view(
 }
 
 fn text_edit(ui: &mut egui::Ui, body: &mut String) {
+    let fill = ui.visuals().panel_fill;
     ui.add(
         egui::TextEdit::multiline(body)
             .desired_width(f32::INFINITY)
             .desired_rows(18)
-            .code_editor(),
+            .code_editor()
+            .frame(
+                egui::Frame::new()
+                    .fill(fill)
+                    .stroke(egui::Stroke::NONE)
+                    .inner_margin(egui::Margin::symmetric(4, 2)),
+            ),
     );
 }
 

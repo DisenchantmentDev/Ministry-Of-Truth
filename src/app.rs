@@ -8,8 +8,8 @@ use crate::backend::{
     instantiate, parse_start_date, Frontmatter, MotError, Page, Project, Result, TemplateKind,
 };
 use crate::frontend::{
-    pick_folder, show_launch, show_project, Dialog, MainView, NationTab, OpenPage, Session,
-    UiAction,
+    pick_folder, show_launch, show_project, Dialog, FloatingPage, MainView, NationTab, OpenPage,
+    Session, UiAction,
 };
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -173,6 +173,8 @@ impl Application {
             UiAction::Save => self.save_with_status(),
             UiAction::ShowTimeline => self.show_timeline(),
             UiAction::OpenPage(id) => self.open_page(id),
+            UiAction::OpenFloating(id) => self.open_floating(id),
+            UiAction::CloseFloating(id) => self.close_floating(id),
             UiAction::OpenFolder(path) => self.open_folder(&path),
             UiAction::CloseProject => self.close_project(),
             UiAction::OpenProject(path) => self.open_project(path),
@@ -193,6 +195,7 @@ impl Application {
 
     fn save_with_status(&mut self) -> Result<()> {
         self.save_open()?;
+        self.save_all_floating()?;
         self.session.status = "Saved.".to_owned();
         Ok(())
     }
@@ -221,6 +224,7 @@ fn set_style(ctx: &Context) {
         (TextStyle::Body, FontId::new(18.0, FontFamily::Proportional)),
         (TextStyle::Button, FontId::new(14.0, FontFamily::Monospace)),
         (TextStyle::Small, FontId::new(14.0, FontFamily::Monospace)),
+        (TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace)),
     ]
     .into();
     ctx.set_global_style(style);
@@ -244,10 +248,72 @@ impl Application {
         Ok(())
     }
 
+    fn save_all_floating(&mut self) -> Result<()> {
+        let dirty: Vec<(Uuid, Frontmatter, String)> = self
+            .session
+            .floating
+            .iter()
+            .filter(|page| page.open.is_dirty())
+            .map(|page| {
+                (
+                    page.open.id,
+                    page.open.frontmatter.clone(),
+                    page.open.body.clone(),
+                )
+            })
+            .collect();
+        for (id, frontmatter, body) in dirty {
+            let saved = self.require_project()?.save_page(id, frontmatter, &body)?;
+            if let Some(page) = self
+                .session
+                .floating
+                .iter_mut()
+                .find(|page| page.open.id == id)
+            {
+                page.open
+                    .mark_saved(saved.frontmatter, saved.body, saved.path);
+            }
+        }
+        Ok(())
+    }
+
     fn open_page(&mut self, id: Uuid) -> Result<()> {
         self.save_open()?;
         let page = self.load_existing(id)?;
         self.install_page(page);
+        Ok(())
+    }
+
+    fn open_floating(&mut self, id: Uuid) -> Result<()> {
+        if let Some(existing) = self
+            .session
+            .floating
+            .iter_mut()
+            .find(|page| page.open.id == id)
+        {
+            existing.visible = true;
+            return Ok(());
+        }
+        let page = self.load_existing(id)?;
+        self.session.floating.push(FloatingPage::from_page(page));
+        Ok(())
+    }
+
+    fn close_floating(&mut self, id: Uuid) -> Result<()> {
+        if let Some(index) = self
+            .session
+            .floating
+            .iter()
+            .position(|page| page.open.id == id)
+        {
+            let page = &self.session.floating[index];
+            if page.open.is_dirty() {
+                let frontmatter = page.open.frontmatter.clone();
+                let body = page.open.body.clone();
+                self.require_project()?.save_page(id, frontmatter, &body)?;
+            }
+            self.session.floating.remove(index);
+        }
         Ok(())
     }
 
@@ -304,8 +370,10 @@ impl Application {
 
     fn close_project(&mut self) -> Result<()> {
         self.save_open()?;
+        self.save_all_floating()?;
         self.project = None;
         self.session.open = None;
+        self.session.floating.clear();
         self.session.dialog = Dialog::None;
         self.state = WindowState::Landing;
         self.open_page_id = None;
@@ -338,6 +406,7 @@ impl Application {
         self.project = Some(project);
         self.state = WindowState::Project;
         self.session.open = None;
+        self.session.floating.clear();
         self.session.dialog = Dialog::None;
         self.main_view = MainView::Page;
         self.open_page_id = None;
@@ -422,6 +491,7 @@ impl Application {
             self.session.open = None;
             self.open_page_id = None;
         }
+        self.session.floating.retain(|page| page.open.id != id);
         self.require_project()?.delete_page(id)?;
         self.session.status = "Deleted.".to_owned();
         Ok(())
@@ -443,6 +513,9 @@ impl Application {
             self.session.open = None;
             self.open_page_id = None;
         }
+        self.session
+            .floating
+            .retain(|page| !page.open.path.starts_with(&absolute));
         self.require_project()?.delete_folder(&relative)?;
         self.session.status = "Deleted folder.".to_owned();
         Ok(())

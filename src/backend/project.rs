@@ -183,9 +183,10 @@ impl Project {
         }
         let mut body = body.to_owned();
         if frontmatter.title != old_title {
-            body = rewrite_wiki_links(&body, &old_title, &frontmatter.title);
-            rewrite_title_fields(&mut frontmatter, &old_title, &frontmatter.title);
-            self.rewrite_other_pages(id, &old_title, &frontmatter.title)?;
+            let new_title = frontmatter.title.clone();
+            body = rewrite_wiki_links(&body, &old_title, &new_title);
+            rewrite_title_fields(&mut frontmatter, &old_title, &new_title);
+            self.rewrite_other_pages(id, &old_title, &new_title)?;
         }
         let path = self.destination_path(&old_path, &frontmatter.title);
         write_page(&path, &frontmatter, &body)?;
@@ -536,7 +537,7 @@ mod tests {
         let player = project.load_page(player_id).expect("reload player");
         assert!(player.body.contents().contains("[[Italia]]"));
         match player.frontmatter.data {
-            PageData::Player(meta) => assert_eq!(meta.nation.as_deref(), Some("Italia")),
+            PageData::Player(ref meta) => assert_eq!(meta.nation.as_deref(), Some("Italia")),
             other => panic!("expected player, got {other:?}"),
         }
         assert_eq!(player.frontmatter.kind(), PageKind::Player);

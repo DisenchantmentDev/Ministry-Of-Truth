@@ -15,6 +15,6 @@ pub(crate) use event::EventType;
 pub(crate) use links::{render_wiki_links, rewrite_title_fields, rewrite_wiki_links, RenderedLink};
 pub(crate) use nation::{Relation, Stance};
 pub(crate) use page::{parse_document, Frontmatter, Page, PageData, PageKind};
-pub(crate) use project::{parse_start_date, Project, ProjectMeta, SavedPage};
+pub(crate) use project::{parse_start_date, PageSummary, Project, ProjectMeta, SavedPage};
 pub(crate) use templates::{instantiate, TemplateKind};
 pub(crate) use timeline::{collect_timeline, TimelineEntry, TimelineKind};

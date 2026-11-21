@@ -1,6 +1,7 @@
 use crate::app::Application;
 use crate::frontend::dialogs;
 use crate::frontend::editor;
+use crate::frontend::floating;
 use crate::frontend::session::{MainView, Session};
 use crate::frontend::timeline_view;
 use crate::frontend::tree;
@@ -24,6 +25,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut Application) -> Vec<UiAction> {
         egui::CentralPanel::default().show(ui, |ui| {
             actions.push(central(ui, project, &mut app.session, app.main_view));
         });
+        actions.extend(floating::show(ui, project, &mut app.session.floating));
         actions.push(dialogs::show(ui, &mut app.session.dialog));
     }
     app.project = project;
@@ -48,11 +50,12 @@ fn show_page(ui: &mut egui::Ui, project: &Project, session: &mut Session) -> UiA
         mode,
         nation_tab,
         cache,
+        live_markdown,
         ..
     } = session;
     let Some(open) = open.as_mut() else {
         ui.label("Select a page from the tree.");
         return UiAction::None;
     };
-    editor::show(ui, project, open, mode, nation_tab, cache)
+    editor::show(ui, project, open, mode, nation_tab, cache, live_markdown)
 }

@@ -4,6 +4,7 @@ use egui_commonmark::CommonMarkCache;
 
 use crate::backend::{PageData, PageKind, Project, TemplateKind};
 use crate::frontend::fields;
+use crate::frontend::layout::{centered_column, CONTENT_WIDTH};
 use crate::frontend::live_markdown::{self, LiveMarkdownState};
 use crate::frontend::preview;
 use crate::frontend::session::{EditMode, NationTab, OpenPage};
@@ -18,13 +19,15 @@ pub(crate) fn show(
     cache: &mut CommonMarkCache,
     live_markdown: &mut LiveMarkdownState,
 ) -> UiAction {
-    let mut action = UiAction::None;
     egui::ScrollArea::vertical()
         .id_salt("page_scroll")
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            action = page_contents(ui, project, open, mode, nation_tab, cache, live_markdown);
-        });
-    action
+            centered_column(ui, CONTENT_WIDTH, |ui| {
+                page_contents(ui, project, open, mode, nation_tab, cache, live_markdown)
+            })
+        })
+        .inner
 }
 
 fn page_contents(
@@ -36,10 +39,26 @@ fn page_contents(
     cache: &mut CommonMarkCache,
     live_markdown: &mut LiveMarkdownState,
 ) -> UiAction {
-    ui.label(open.frontmatter.kind().label());
-    fields::plain_text(ui, "Title", &mut open.frontmatter.title);
-    let mut action = header(ui, project, open);
-    ui.separator();
+    ui.label(egui::RichText::new(open.frontmatter.kind().label().to_uppercase()).small().weak());
+    ui.add(
+        egui::TextEdit::singleline(&mut open.frontmatter.title)
+            .font(egui::TextStyle::Heading)
+            .hint_text("Untitled")
+            .desired_width(f32::INFINITY)
+            .frame(egui::Frame::new()),
+    );
+    ui.add_space(4.0);
+    let mut action = if matches!(open.frontmatter.data, PageData::Note) {
+        UiAction::None
+    } else {
+        egui::Frame::group(ui.style())
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                header(ui, project, open)
+            })
+            .inner
+    };
+    ui.add_space(8.0);
     if open.frontmatter.kind() == PageKind::Nation {
         action = merge(
             action,

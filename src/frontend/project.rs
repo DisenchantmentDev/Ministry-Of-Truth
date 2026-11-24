@@ -20,7 +20,12 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut Application) -> Vec<UiAction> {
                 actions.push(tree::show(ui, project, open_id, app.main_view));
             });
         egui::Panel::bottom("status").show(ui, |ui| {
-            ui.label(&app.session.status);
+            let status = if app.session.status.is_empty() {
+                " "
+            } else {
+                app.session.status.as_str()
+            };
+            ui.label(egui::RichText::new(status).small().weak());
         });
         egui::CentralPanel::default().show(ui, |ui| {
             actions.push(central(ui, project, &mut app.session, app.main_view));
@@ -54,7 +59,9 @@ fn show_page(ui: &mut egui::Ui, project: &Project, session: &mut Session) -> UiA
         ..
     } = session;
     let Some(open) = open.as_mut() else {
-        ui.label("Select a page from the tree.");
+        ui.centered_and_justified(|ui| {
+            ui.label(egui::RichText::new("Select a page from the tree").weak());
+        });
         return UiAction::None;
     };
     editor::show(ui, project, open, mode, nation_tab, cache, live_markdown)

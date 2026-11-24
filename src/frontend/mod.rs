@@ -5,6 +5,7 @@ mod fields;
 mod files;
 mod floating;
 mod launch;
+mod layout;
 mod live_markdown;
 mod preview;
 mod project;

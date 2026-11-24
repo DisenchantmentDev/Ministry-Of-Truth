@@ -136,10 +136,11 @@ impl Application {
             });
             if let Some(name) = name {
                 ui.separator();
-                ui.label(name);
+                ui.label(egui::RichText::new(name).strong());
             }
-            ui.add_space(16.0);
-            egui::widgets::global_theme_preference_buttons(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::widgets::global_theme_preference_buttons(ui);
+            });
         });
         actions
     }

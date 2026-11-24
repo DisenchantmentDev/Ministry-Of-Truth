@@ -137,11 +137,17 @@ pub(crate) fn show(
 
     let painter = ui.painter_at(rect);
     let mut cursor_y = rect.top() + spacing_y;
-    for (block, galley) in layout.blocks.iter().zip(&galleys) {
+    // A cursor on a line boundary belongs to exactly one block (the later one),
+    // otherwise it would be drawn at the end of one line and the start of the next.
+    let caret_block = state
+        .focused
+        .then(|| block_index_for_cursor(&layout, state.cursor))
+        .flatten();
+    for (index, (block, galley)) in layout.blocks.iter().zip(&galleys).enumerate() {
         let pos = egui::pos2(rect.left() + 4.0, cursor_y);
         painter.galley(pos, galley.clone(), ui.visuals().text_color());
 
-        if state.focused && state.cursor >= block.range.start && state.cursor <= block.range.end {
+        if caret_block == Some(index) {
             let local = state.cursor.saturating_sub(block.range.start);
             let caret = galley.pos_from_cursor(egui::text::CCursor {
                 index: byte_to_char_index(&body[block.range.clone()], local),
@@ -204,9 +210,11 @@ pub(crate) fn build_layout(source: &str) -> DocumentLayout {
         blocks.push(block);
         offset += len;
     }
-    if source.is_empty() {
+    // An empty document, or one ending in a newline, has a final empty line
+    // where the caret can sit.
+    if source.is_empty() || source.ends_with('\n') {
         blocks.push(Block {
-            range: 0..0,
+            range: source.len()..source.len(),
             kind: BlockKind::Empty,
             runs: Vec::new(),
         });
@@ -383,7 +391,7 @@ fn cursor_at_pointer(
             let local = egui::vec2(pos.x - rect.left() - 4.0, pos.y - cursor_y);
             let cursor = galley.cursor_from_pos(local);
             let byte = char_to_byte_index(&source[block.range.clone()], cursor.index);
-            return block.range.start + byte;
+            return (block.range.start + byte).min(content_end(source, block));
         }
         cursor_y += height;
     }
@@ -555,11 +563,18 @@ fn cursor_at_content_pos(
             let local = egui::vec2(pos.x, (pos.y - cursor_y).max(0.0));
             let cursor = galley.cursor_from_pos(local);
             let byte = char_to_byte_index(&source[block.range.clone()], cursor.index);
-            return (block.range.start + byte).min(block.range.end);
+            return (block.range.start + byte).min(content_end(source, block));
         }
         cursor_y += height;
     }
     source.len()
+}
+
+/// End of a block's text, before its trailing line break.
+///
+/// Clicks and vertical moves clamp here so they never land on the next line's start.
+fn content_end(source: &str, block: &Block) -> usize {
+    block.range.start + source[block.range.clone()].trim_end_matches(['\r', '\n']).len()
 }
 
 fn prev_char_boundary(text: &str, index: usize) -> usize {
@@ -599,7 +614,19 @@ fn char_to_byte_index(slice: &str, chars: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_layout, BlockKind, RunKind};
+    use super::{block_index_for_cursor, build_layout, BlockKind, RunKind};
+
+    #[test]
+    fn line_boundary_cursor_belongs_to_one_block() {
+        let source = "ab\ncd\n";
+        let layout = build_layout(source);
+        // "ab\n", "cd\n", and a trailing empty line.
+        assert_eq!(layout.blocks.len(), 3);
+        assert_eq!(block_index_for_cursor(&layout, 2), Some(0));
+        assert_eq!(block_index_for_cursor(&layout, 3), Some(1));
+        assert_eq!(block_index_for_cursor(&layout, 5), Some(1));
+        assert_eq!(block_index_for_cursor(&layout, 6), Some(2));
+    }
 
     #[test]
     fn layout_marks_headings_and_wiki_links() {

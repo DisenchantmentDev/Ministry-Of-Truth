@@ -1,85 +1,139 @@
-# eframe template
+# Ministry of Truth
 
-[![dependency status](https://deps.rs/repo/github/emilk/eframe_template/status.svg)](https://deps.rs/repo/github/emilk/eframe_template)
-[![Build Status](https://github.com/emilk/eframe_template/workflows/CI/badge.svg)](https://github.com/emilk/eframe_template/actions?workflow=CI)
+Ministry of Truth is a desktop notebook for tracking lore during Minecraft roleplay events. It keeps notes on nations, players, and events in one project, links them to each other, and places them on a timeline.
 
-This is a template repo for [eframe](https://github.com/emilk/egui/tree/master/crates/eframe), a framework for writing apps using [egui](https://github.com/emilk/egui/).
+The app is written in Rust with [egui](https://github.com/emilk/egui) and [eframe](https://github.com/emilk/egui/tree/master/crates/eframe).
 
-The goal is for this to be the simplest way to get started writing a GUI app in Rust.
+## What it is
 
-You can compile your app natively or for the web, and share it using Github Pages.
+Roleplay events produce a lot of connected information. A single war can involve several nations, a dozen players, and a chain of events over many in-game days. Keeping this in a set of loose documents makes it hard to see how things relate.
 
-## Getting started
+Ministry of Truth stores each piece of information as a page. Pages hold structured fields (for example, which nation a player belongs to or what day an event happened) and free-form notes in Markdown. The app uses these fields to build relations, lists, and a timeline.
 
-Start by clicking "Use this template" at https://github.com/emilk/eframe_template/ or follow [these instructions](https://docs.github.com/en/free-pro-team@latest/github/creating-cloning-and-archiving-repositories/creating-a-repository-from-a-template).
+## Current features
 
-Change the name of the crate: Choose a good name for your project, and change the name to it in:
-* `Cargo.toml`
-    * Change the `package.name` from `eframe_template` to `your_crate`.
-    * Change the `package.authors`
-* `main.rs`
-    * Change `eframe_template::TemplateApp` to `your_crate::TemplateApp`
-* `index.html`
-    * Change the `<title>eframe template</title>` to `<title>your_crate</title>`. optional.
-* `assets/sw.js`
-  * Change the `'./eframe_template.js'` to `./your_crate.js` (in `filesToCache` array)
-  * Change the `'./eframe_template_bg.wasm'` to `./your_crate_bg.wasm` (in `filesToCache` array)
+### Projects
 
-Alternatively, you can run `fill_template.sh` which will ask for the needed names and email and perform the above patches for you. This is particularly useful if you clone this repository outside GitHub and hence cannot make use of its
-templating function.
+- A project is a folder. Creating a project writes a `project.json` file with the project name and an optional Day 0 date.
+- Pages are plain Markdown files with a YAML header. The app reads and writes these files directly, so a project can be copied, backed up, or put under version control.
+- The project tree on the left shows folders and pages. Folders and pages can be created, renamed, and deleted.
+- The app warns about pages that share a title.
 
-### Learning about egui
+### Page types
 
-`src/app.rs` contains a simple example app. This is just to give some inspiration - most of it can be removed if you like.
+| Type   | Structured fields                                                        |
+|--------|--------------------------------------------------------------------------|
+| Note   | Title and Markdown body only                                             |
+| Nation | Leaders, location, founded day, and relations to other nations           |
+| Player | Nation, Discord name, and death day                                      |
+| Event  | Day, event type, location, nations, and participants                     |
 
-The official egui docs are at <https://docs.rs/egui>. If you prefer watching a video introduction, check out <https://www.youtube.com/watch?v=NtUkr_z7l84>. For inspiration, check out the [the egui web demo](https://emilk.github.io/egui/index.html) and follow the links in it to its source code.
+Relations between nations use one of four stances: Allied, Hostile, Neutral, or Vassal.
 
-### Testing locally
+Event types are Assassination, War, Battle, Diplomacy, and Other.
 
-`cargo run --release`
+Templates are available for blank notes, assassinations, wars, players, and nations. Plain events are created from a nation's Events tab.
 
-On Linux you need to first run:
+A nation page has three tabs:
 
-`sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev`
+- **Notes** holds the Markdown body.
+- **Events** lists every event that names the nation, and creates a new linked event.
+- **Relations** edits the stance toward other nations.
 
-On Fedora Rawhide you need to run:
+### Links
 
-`dnf install clang clang-devel clang-tools-extra libxkbcommon-devel pkg-config openssl-devel libxcb-devel gtk3-devel atk fontconfig-devel`
+- Wiki links use the form `[[Title]]`. A link resolves by page title or by file name.
+- Clicking a resolved link opens the page. Unresolved links are marked "(missing)" in the preview, and a button creates a note with that title.
+- Renaming a page updates the wiki links, leader lists, nation fields, and event fields that refer to the old title in other pages.
 
-### Web Locally
+### Editing
 
-You can compile your app to [WASM](https://en.wikipedia.org/wiki/WebAssembly) and publish it as a web page.
+- Each page can be viewed in four modes: Edit (source only), Preview (rendered Markdown), Split (source and preview side by side), and Live (styled source editing).
+- Pages can open in floating windows that can be moved and resized. This lets two pages stay visible at once.
+- Save with `Ctrl+S` or from the File menu. Switching pages and closing a project also save the open page.
 
-We use [Trunk](https://trunkrs.dev/) to build for web target.
-1. Install the required target with `rustup target add wasm32-unknown-unknown`.
+### Timeline
+
+- The timeline lists events, nation foundings on or after Day 0, and recorded player deaths.
+- Entries are grouped by day. If a Day 0 date is set, each day shows its calendar date.
+- Events without a day appear at the end under "Undated".
+- Nations founded before Day 0 are left off the timeline.
+
+### Platforms
+
+- The native desktop app is the main target. It handles folder selection and file access.
+- A web build is set up with Trunk. The web build can display the interface, but it cannot open or create project folders.
+
+## Planned features
+
+These features are not yet implemented.
+
+### Minimaps and border drawing
+
+- **Minimaps** would show a map of the game world, with nations, events, and locations placed on it.
+- **Manual border drawing** would let a user draw territory borders on the map by hand. Borders would be linked to nation pages, so a nation's territory can be read from its page and the map together.
+
+### Ticket import and tracking
+
+- **Ticket import** would bring in requests, reports, or issues from an external source, so they do not need to be entered by hand.
+- **Ticket tracking** would keep a list of open items and their status, and link each item to the nations, players, or events it concerns.
+
+## Project layout
+
+A new project has this structure:
+
+```text
+my-project/
+├── project.json
+├── index.md
+├── nations/
+│   └── index.md
+├── players/
+│   └── index.md
+└── events/
+    └── index.md
+```
+
+Nation, player, and event pages are filed in `nations/`, `players/`, and `events/`. Notes are filed in the folder selected in the tree.
+
+## Building and running
+
+Requirements:
+
+- Rust 1.92 or newer.
+- On Debian or Ubuntu, the packages needed by eframe:
+
+  ```sh
+  sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+  ```
+
+Run the desktop app:
+
+```sh
+cargo run --release
+```
+
+Run the tests:
+
+```sh
+cargo test
+```
+
+### Web build
+
+The web build uses [Trunk](https://trunkrs.dev/) and the `wasm32-unknown-unknown` target.
+
+1. Install the target with `rustup target add wasm32-unknown-unknown`.
 2. Install Trunk with `cargo install --locked trunk`.
-3. Run `trunk serve` to build and serve on `http://127.0.0.1:8080`. Trunk will rebuild automatically if you edit the project.
-4. Open `http://127.0.0.1:8080/index.html#dev` in a browser. See the warning below.
+3. Run `trunk serve` and open `http://127.0.0.1:8080`.
 
-> `assets/sw.js` script will try to cache our app, and loads the cached version when it cannot connect to server allowing your app to work offline (like PWA).
-> appending `#dev` to `index.html` will skip this caching, allowing us to load the latest builds during development.
+Run `trunk build --release` to produce a static site in `dist`.
 
-### Web Deploy
-1. Just run `trunk build --release`.
-2. It will generate a `dist` directory as a "static html" website
-3. Upload the `dist` directory to any of the numerous free hosting websites including [GitHub Pages](https://docs.github.com/en/free-pro-team@latest/github/working-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
-4. we already provide a workflow that auto-deploys our app to GitHub pages if you enable it.
-> To enable Github Pages, you need to go to Repository -> Settings -> Pages -> Source -> set to `gh-pages` branch and `/` (root).
->
-> If `gh-pages` is not available in `Source`, just create and push a branch called `gh-pages` and it should be available.
->
-> If you renamed the `main` branch to something else (say you re-initialized the repository with `master` as the initial branch), be sure to edit the github workflows `.github/workflows/pages.yml` file to reflect the change
-> ```yml
-> on:
->   push:
->     branches:
->       - <branch name>
-> ```
+## License
 
-You can test the template app at <https://emilk.github.io/eframe_template/>.
+Licensed under either of
 
-## Updating egui
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 
-As of 2023, egui is in active development with frequent releases with breaking changes. [eframe_template](https://github.com/emilk/eframe_template/) will be updated in lock-step to always use the latest version of egui.
-
-When updating `egui` and `eframe` it is recommended you do so one version at the time, and read about the changes in [the egui changelog](https://github.com/emilk/egui/blob/master/CHANGELOG.md) and [eframe changelog](https://github.com/emilk/egui/blob/master/crates/eframe/CHANGELOG.md).
+at your option.

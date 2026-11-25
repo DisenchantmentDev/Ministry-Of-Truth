@@ -281,7 +281,16 @@ impl StoredFrontmatter {
 pub(crate) fn parse_document(text: &str) -> Result<(Frontmatter, String)> {
     let (yaml, body) = split_frontmatter(text)?;
     let stored: StoredFrontmatter = serde_yml::from_str(yaml)?;
-    Ok((stored.into_frontmatter(), body.to_owned()))
+    Ok((stored.into_frontmatter(), normalize_newlines(body)))
+}
+
+/// Use `\n` for every line break so editors and preview agree on them.
+pub(crate) fn normalize_newlines(text: &str) -> String {
+    if text.contains('\r') {
+        text.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        text.to_owned()
+    }
 }
 
 pub(crate) fn write_document(frontmatter: &Frontmatter, body: &str) -> Result<String> {

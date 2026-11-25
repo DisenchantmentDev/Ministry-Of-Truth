@@ -1,4 +1,6 @@
-use crate::backend::{EventType, Project, Relation, Stance};
+use uuid::Uuid;
+
+use crate::backend::{EventType, NationMeta, Project, Relation, Stance};
 use crate::frontend::UiAction;
 
 pub(crate) fn optional_text(ui: &mut egui::Ui, label: &str, value: &mut Option<String>) {
@@ -118,5 +120,23 @@ pub(crate) fn plain_text(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.text_edit_singleline(value);
+    });
+}
+
+/// Color picker for a nation's map tint. Unset colors show the derived default.
+pub(crate) fn nation_color(ui: &mut egui::Ui, id: Uuid, meta: &mut NationMeta) {
+    ui.horizontal(|ui| {
+        ui.label("Map color");
+        let mut rgb = meta.color_for(id);
+        if ui.color_edit_button_srgb(&mut rgb).changed() {
+            meta.color = Some(rgb);
+        }
+        if meta.color.is_some() {
+            if ui.button("Reset").on_hover_text("Use the automatic color").clicked() {
+                meta.color = None;
+            }
+        } else {
+            ui.label(egui::RichText::new("automatic").small().weak());
+        }
     });
 }

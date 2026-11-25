@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::backend::{PageSummary, Project, TemplateKind};
 use crate::frontend::session::MainView;
-use crate::frontend::{Dialog, UiAction};
+use crate::frontend::{Dialog, ImportMapForm, UiAction};
 
 #[derive(Debug, Clone)]
 struct TreeNode {
@@ -21,6 +21,7 @@ pub(crate) fn show(
     project: &Project,
     open_id: Option<Uuid>,
     main_view: MainView,
+    active_map: Option<&str>,
 ) -> UiAction {
     let mut action = UiAction::None;
     if ui
@@ -29,6 +30,7 @@ pub(crate) fn show(
     {
         action = UiAction::ShowTimeline;
     }
+    action = merge(action, maps_section(ui, project, main_view, active_map));
     ui.separator();
     for warning in &project.warnings {
         ui.colored_label(ui.visuals().warn_fg_color, warning);
@@ -38,6 +40,41 @@ pub(crate) fn show(
         action,
         show_node(ui, &tree, open_id, main_view == MainView::Page, 0),
     )
+}
+
+fn maps_section(
+    ui: &mut egui::Ui,
+    project: &Project,
+    main_view: MainView,
+    active_map: Option<&str>,
+) -> UiAction {
+    let mut action = UiAction::None;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Maps").strong());
+        if ui
+            .small_button("Import")
+            .on_hover_text("Import a Xaero's map image")
+            .clicked()
+        {
+            action = UiAction::OpenDialog(Dialog::ImportMap(ImportMapForm::default()));
+        }
+    });
+    for map in project.maps() {
+        let selected = main_view == MainView::Map && active_map == Some(map.slug.as_str());
+        let response = ui.selectable_label(selected, &map.meta.name);
+        if response.clicked() {
+            action = UiAction::ShowMap(map.slug.clone());
+        }
+        response.context_menu(|ui| {
+            if ui.button("Delete").clicked() {
+                action = UiAction::OpenDialog(Dialog::DeleteMap {
+                    slug: map.slug.clone(),
+                    name: map.meta.name.clone(),
+                });
+            }
+        });
+    }
+    action
 }
 
 /// Root event name is largest; top-level folders are mid-size; deeper rows share one floor size.

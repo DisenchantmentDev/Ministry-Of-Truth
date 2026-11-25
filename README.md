@@ -34,11 +34,14 @@ Event types are Assassination, War, Battle, Diplomacy, and Other.
 
 Templates are available for blank notes, assassinations, wars, players, and nations. Plain events are created from a nation's Events tab.
 
-A nation page has three tabs:
+A nation page has four tabs:
 
 - **Notes** holds the Markdown body.
 - **Events** lists every event that names the nation, and creates a new linked event.
 - **Relations** edits the stance toward other nations.
+- **Map** lists each map with the number of chunks the nation holds on it, and opens the map.
+
+A nation also has a **Map color**. If none is set, the app picks a stable color from the page's id.
 
 ### Links
 
@@ -59,6 +62,17 @@ A nation page has three tabs:
 - Events without a day appear at the end under "Undated".
 - Nations founded before Day 0 are left off the timeline.
 
+### Maps and borders
+
+- A map is an image of the game world, such as a PNG exported from Xaero's World Map. Choose **Import** under Maps in the project tree, pick the image, and set where it sits in the world.
+- Xaero's images carry no coordinates, so each map has a calibration: pixels per block and the block position of the top-left corner. The Calibration panel can compute these from one or two reference pixels whose block coordinates you know.
+- Territory is drawn per chunk (16 by 16 blocks). Select a nation in the legend, then paint chunks with the Brush, Rectangle, or Fill tool. The Eraser clears chunks, and Pick selects the nation under the cursor. Each chunk has at most one owner.
+- Claimed chunks show as a tinted shape in the nation's color with an outline. The legend shows each nation's chunk count and area.
+- Pan by dragging with the middle or right mouse button (or hold Space), and zoom with the scroll wheel. Undo and redo with `Ctrl+Z` and `Ctrl+Shift+Z`. Tool keys are B, R, F, E, and I.
+- Maps save with `Ctrl+S`, when you switch views, and when you close the project.
+- Each map is a folder under `maps/` with `map.json` (calibration), the image, and `claims.json` (chunks per nation, stored as runs). Claims refer to nation pages by id, so renaming a nation keeps its territory.
+- Importing Xaero's world map folder (the `.xwmc` region files) is not supported yet. Export an image from Xaero's World Map instead.
+
 ### Platforms
 
 - The native desktop app is the main target. It handles folder selection and file access.
@@ -68,10 +82,11 @@ A nation page has three tabs:
 
 These features are not yet implemented.
 
-### Minimaps and border drawing
+### Map extras
 
-- **Minimaps** would show a map of the game world, with nations, events, and locations placed on it.
-- **Manual border drawing** would let a user draw territory borders on the map by hand. Borders would be linked to nation pages, so a nation's territory can be read from its page and the map together.
+- **Importing Xaero's world map folder** directly, without exporting an image first.
+- **Events and locations on the map**, placed at block coordinates.
+- **Border history** that changes with the timeline, so territory can be shown on a given day.
 
 ### Ticket import and tracking
 

@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::backend::buffers::TextBuf;
 use crate::backend::error::{MotError, Result};
 use crate::backend::event::{EventMeta, EventType};
-use crate::backend::nation::{NationMeta, Relation};
+use crate::backend::nation::{format_hex_color, parse_hex_color, NationMeta, Relation};
 use crate::backend::player::PlayerMeta;
 
 /// Which structured record a markdown file holds.
@@ -191,6 +191,8 @@ struct StoredFrontmatter {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     relations: Vec<Relation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     nation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     discord: Option<String>,
@@ -216,6 +218,7 @@ impl StoredFrontmatter {
             location: String::new(),
             founded: None,
             relations: Vec::new(),
+            color: None,
             nation: None,
             discord: None,
             death: None,
@@ -231,6 +234,7 @@ impl StoredFrontmatter {
                 stored.location.clone_from(&meta.location);
                 stored.founded = meta.founded;
                 stored.relations.clone_from(&meta.relations);
+                stored.color = meta.color.map(format_hex_color);
             }
             PageData::Player(meta) => {
                 stored.nation.clone_from(&meta.nation);
@@ -256,6 +260,7 @@ impl StoredFrontmatter {
                 location: self.location,
                 founded: self.founded,
                 relations: self.relations,
+                color: self.color.as_deref().and_then(parse_hex_color),
             }),
             PageKind::Player => PageData::Player(PlayerMeta {
                 nation: self.nation,
@@ -331,6 +336,7 @@ mod tests {
             meta.leaders = vec!["Caesar".to_owned()];
             meta.location = "Italy".to_owned();
             meta.founded = Some(-10);
+            meta.color = Some([200, 30, 30]);
             meta.relations = vec![Relation {
                 target: "Gaul".to_owned(),
                 stance: Stance::Hostile,

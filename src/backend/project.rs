@@ -8,9 +8,15 @@ use uuid::Uuid;
 use crate::backend::buffers::TextBuf;
 use crate::backend::error::{MotError, Result};
 use crate::backend::links::{resolve_link, rewrite_title_fields, rewrite_wiki_links};
+use crate::backend::map::{
+    read_claims, read_meta, write_claims, write_meta, ClaimLayer, MapDoc, MapMeta, MapSummary,
+    MAP_SCHEMA,
+};
 use crate::backend::page::{Frontmatter, Page, PageData};
 
 const SCHEMA: u32 = 1;
+const MAPS_DIR: &str = "maps";
+const MAP_IMAGE_EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
 
 pub(crate) fn parse_start_date(text: &str) -> Result<Option<NaiveDate>> {
     let text = text.trim();
@@ -46,12 +52,21 @@ pub struct SavedPage {
     pub body: String,
 }
 
+/// A nation page as seen by the map editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NationInfo {
+    pub id: Uuid,
+    pub title: String,
+    pub color: [u8; 3],
+}
+
 /// An open project folder.
 #[derive(Debug, Clone)]
 pub struct Project {
     pub root: PathBuf,
     pub meta: ProjectMeta,
     pages: Vec<PageSummary>,
+    maps: Vec<MapSummary>,
     pub warnings: Vec<String>,
 }
 
@@ -89,6 +104,7 @@ impl Project {
             root: root.to_path_buf(),
             meta,
             pages: Vec::new(),
+            maps: Vec::new(),
             warnings: Vec::new(),
         };
         project.rescan()?;
@@ -106,6 +122,7 @@ impl Project {
         let mut warnings = Vec::new();
         walk(&self.root, &mut pages, &mut warnings)?;
         warnings.extend(duplicate_warnings(&pages));
+        self.maps = scan_maps(&self.root.join(MAPS_DIR), &mut warnings);
         self.pages = pages;
         self.warnings = warnings;
         Ok(())
@@ -113,6 +130,112 @@ impl Project {
 
     pub(crate) fn pages(&self) -> &[PageSummary] {
         &self.pages
+    }
+
+    /// Every nation page, sorted by title.
+    pub(crate) fn nations(&self) -> Vec<NationInfo> {
+        let mut nations: Vec<NationInfo> = self
+            .pages
+            .iter()
+            .filter_map(|page| match &page.frontmatter.data {
+                PageData::Nation(meta) => Some(NationInfo {
+                    id: page.frontmatter.id,
+                    title: page.frontmatter.title.clone(),
+                    color: meta.color_for(page.frontmatter.id),
+                }),
+                _ => None,
+            })
+            .collect();
+        nations.sort_by_key(|nation| nation.title.to_lowercase());
+        nations
+    }
+
+    pub(crate) fn maps(&self) -> &[MapSummary] {
+        &self.maps
+    }
+
+    /// Folder holding a map's files.
+    pub(crate) fn map_dir(&self, slug: &str) -> Result<PathBuf> {
+        if !valid_folder_name(slug) {
+            return Err(MotError::new("invalid map name"));
+        }
+        Ok(self.root.join(MAPS_DIR).join(slug))
+    }
+
+    /// Import an image as a new map and return its slug.
+    pub(crate) fn create_map(
+        &mut self,
+        name: &str,
+        source: &Path,
+        px_per_block: f64,
+        origin_block: [f64; 2],
+        dimension: &str,
+    ) -> Result<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(MotError::new("map name cannot be empty"));
+        }
+        let extension = source
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .filter(|ext| MAP_IMAGE_EXTENSIONS.contains(&ext.as_str()))
+            .ok_or_else(|| MotError::new("the map image must be a PNG or JPEG file"))?;
+        let (width, height) = image::image_dimensions(source)?;
+        let meta = MapMeta {
+            schema: MAP_SCHEMA,
+            name: name.to_owned(),
+            image: format!("base.{extension}"),
+            image_size: [width, height],
+            px_per_block,
+            origin_block,
+            dimension: dimension.trim().to_owned(),
+        };
+        meta.validate()?;
+
+        let maps_root = self.root.join(MAPS_DIR);
+        fs::create_dir_all(&maps_root)?;
+        let slug = unique_dir_slug(&maps_root, &slugify(name));
+        let dir = maps_root.join(&slug);
+        fs::create_dir(&dir)?;
+        let written = fs::copy(source, dir.join(&meta.image))
+            .map_err(MotError::from)
+            .and_then(|_| write_meta(&dir, &meta))
+            .and_then(|()| write_claims(&dir, &ClaimLayer::default()));
+        if let Err(err) = written {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(err);
+        }
+        self.rescan()?;
+        Ok(slug)
+    }
+
+    pub(crate) fn load_map(&self, slug: &str) -> Result<MapDoc> {
+        let dir = self.map_dir(slug)?;
+        Ok(MapDoc {
+            slug: slug.to_owned(),
+            meta: read_meta(&dir)?,
+            claims: read_claims(&dir)?,
+        })
+    }
+
+    pub(crate) fn save_map(&mut self, slug: &str, meta: &MapMeta, claims: &ClaimLayer) -> Result<()> {
+        meta.validate()?;
+        let dir = self.map_dir(slug)?;
+        write_meta(&dir, meta)?;
+        write_claims(&dir, claims)?;
+        if let Some(summary) = self.maps.iter_mut().find(|map| map.slug == slug) {
+            summary.meta = meta.clone();
+            summary.counts = claims.counts();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn delete_map(&mut self, slug: &str) -> Result<()> {
+        let dir = self.map_dir(slug)?;
+        fs::remove_dir_all(dir)?;
+        self.rescan()?;
+        Ok(())
     }
 
     pub(crate) fn contains(&self, id: Uuid) -> bool {
@@ -388,6 +511,47 @@ fn walk(dir: &Path, pages: &mut Vec<PageSummary>, warnings: &mut Vec<String>) ->
     Ok(())
 }
 
+/// List `maps/*/map.json`. Unreadable maps become warnings instead of errors.
+fn scan_maps(maps_root: &Path, warnings: &mut Vec<String>) -> Vec<MapSummary> {
+    let Ok(entries) = fs::read_dir(maps_root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join(crate::backend::map::MAP_FILE).is_file())
+        .collect();
+    dirs.sort();
+    let mut maps = Vec::new();
+    for dir in dirs {
+        let Some(slug) = dir.file_name().and_then(|name| name.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        match read_meta(&dir).and_then(|meta| Ok((meta, read_claims(&dir)?))) {
+            Ok((meta, claims)) => maps.push(MapSummary {
+                slug,
+                meta,
+                counts: claims.counts(),
+            }),
+            Err(err) => warnings.push(format!("{}: {err}", dir.display())),
+        }
+    }
+    maps
+}
+
+fn unique_dir_slug(parent: &Path, slug: &str) -> String {
+    if !parent.join(slug).exists() {
+        return slug.to_owned();
+    }
+    for suffix in 2..10_000 {
+        let candidate = format!("{slug}-{suffix}");
+        if !parent.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    format!("{slug}-{}", Uuid::new_v4())
+}
+
 fn duplicate_warnings(pages: &[PageSummary]) -> Vec<String> {
     let mut first = BTreeMap::new();
     let mut warnings = Vec::new();
@@ -499,6 +663,67 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn map_create_save_reload_and_delete() {
+        use crate::backend::map::{ChunkPos, ClaimLayer};
+
+        let dir = TempDir::new();
+        let mut project = Project::create(&dir.0, "Campaign", None).expect("create");
+        let source = dir.0.join("export.png");
+        image::RgbaImage::new(64, 48).save(&source).expect("write png");
+
+        let slug = project
+            .create_map("Overworld", &source, 1.0, [-32.0, -24.0], "Overworld")
+            .expect("create map");
+        assert_eq!(slug, "overworld");
+        assert!(project.map_dir(&slug).expect("dir").join("base.png").is_file());
+        assert_eq!(project.maps().len(), 1);
+        assert_eq!(project.maps()[0].meta.image_size, [64, 48]);
+        assert!(
+            project
+                .create_map("Bad", &dir.0.join("notes.txt"), 1.0, [0.0, 0.0], "")
+                .is_err(),
+            "non-image extensions are rejected"
+        );
+        assert!(
+            project.create_map("Zero", &source, 0.0, [0.0, 0.0], "").is_err(),
+            "scale must be positive"
+        );
+        assert_eq!(project.maps().len(), 1, "failed imports leave nothing behind");
+
+        let again = project
+            .create_map("Overworld", &source, 2.0, [0.0, 0.0], "")
+            .expect("second map");
+        assert_eq!(again, "overworld-2");
+
+        let nation = project
+            .create_page(
+                &dir.0.join("nations"),
+                crate::backend::page::Frontmatter::nation("Rome".to_owned()),
+                "",
+            )
+            .expect("nation");
+        let mut doc = project.load_map(&slug).expect("load");
+        assert!(doc.claims.is_empty());
+        doc.claims.set(ChunkPos::new(-1, -1), Some(nation));
+        doc.claims.set(ChunkPos::new(0, -1), Some(nation));
+        doc.meta.px_per_block = 4.0;
+        project.save_map(&slug, &doc.meta, &doc.claims).expect("save");
+        assert_eq!(project.maps()[0].counts.get(&nation), Some(&2));
+
+        let reopened = Project::open(&dir.0).expect("reopen");
+        let reloaded = reopened.load_map(&slug).expect("reload");
+        assert_eq!(reloaded.meta.px_per_block, 4.0);
+        let expected: ClaimLayer = doc.claims;
+        assert_eq!(reloaded.claims, expected);
+        assert_eq!(reopened.nations().len(), 1);
+        assert_eq!(reopened.nations()[0].id, nation);
+
+        project.delete_map(&slug).expect("delete");
+        assert_eq!(project.maps().len(), 1);
+        assert!(project.maps().iter().all(|map| map.slug != slug));
     }
 
     #[test]

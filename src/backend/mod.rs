@@ -13,7 +13,9 @@ mod timeline;
 pub(crate) use buffers::TextBuf;
 pub(crate) use error::{MotError, Result};
 pub(crate) use event::EventType;
-pub(crate) use links::{render_wiki_links, rewrite_title_fields, rewrite_wiki_links, RenderedLink};
+pub(crate) use links::{
+    render_wiki_links, rewrite_title_fields, rewrite_wiki_links, suggest_link_titles, RenderedLink,
+};
 pub(crate) use map::{
     ChunkPos, ChunkRect, ClaimChange, ClaimEditor, ClaimLayer, MapDoc, MapMeta,
     CHUNK_BLOCKS,

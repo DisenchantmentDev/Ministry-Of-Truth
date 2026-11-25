@@ -1,14 +1,14 @@
 # Ministry of Truth
 
-Ministry of Truth is a desktop notebook for tracking lore during Minecraft roleplay events. It keeps notes on nations, players, and events in one project, links them to each other, and places them on a timeline.
+Ministry of Truth is a desktop notebook for tracking lore during Minecraft roleplay events, allowing staff members to keep notes on nations, players, and major events in one centralized project, designed with the complexities of these events in mind.
 
 The app is written in Rust with [egui](https://github.com/emilk/egui) and [eframe](https://github.com/emilk/egui/tree/master/crates/eframe).
 
 ## What it is
 
-Roleplay events produce a lot of connected information. A single war can involve several nations, a dozen players, and a chain of events over many in-game days. Keeping this in a set of loose documents makes it hard to see how things relate.
+Roleplay events produce a lot of connected information. This information, as we have found in Ish's state, can be a nightmare to track, and finding a clean solution that prevents information from being lost, but also standardizes the format, has been nearly impossible. Thus, Ministry of Truth was born. 
 
-Ministry of Truth stores each piece of information as a page. Pages hold structured fields (for example, which nation a player belongs to or what day an event happened) and free-form notes in Markdown. The app uses these fields to build relations, lists, and a timeline.
+Ministry of Truth stores each piece of information as a page. Pages hold structured fields (ex. which nation a player belongs to or what day an event happened) as well as a Markdown formatted field for extra notes to be written by the staff member. All information in the structured fields are used to create a structured tree of information, and can also be used to populate a timeline.
 
 ## Current features
 
@@ -90,7 +90,7 @@ These features are not yet implemented.
 
 ### Ticket import and tracking
 
-- **Ticket import** would bring in requests, reports, or issues from an external source, so they do not need to be entered by hand.
+- **Ticket import** would bring in requests, reports, or issues externally from ticket bots in discord to help track player requests and lore as an event is happening. This would allow for intake of raw JSON files and to link them to individual players already logged in MoT.
 - **Ticket tracking** would keep a list of open items and their status, and link each item to the nations, players, or events it concerns.
 
 ## Project layout
@@ -143,12 +143,3 @@ The web build uses [Trunk](https://trunkrs.dev/) and the `wasm32-unknown-unknown
 3. Run `trunk serve` and open `http://127.0.0.1:8080`.
 
 Run `trunk build --release` to produce a static site in `dist`.
-
-## License
-
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
-
-at your option.

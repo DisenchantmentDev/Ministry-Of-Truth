@@ -12,11 +12,14 @@ use std::sync::Arc;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{EventFilter, FontFamily, FontId, Galley, Sense, TextStyle};
 
-use crate::backend::Project;
+use crate::backend::{suggest_link_titles, Project, TemplateKind};
 use crate::frontend::UiAction;
 
+/// Most rows the `[[` suggestion popup shows.
+const MAX_SUGGESTIONS: usize = 8;
+
 /// Per-session caret and focus for the live markdown surface.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LiveMarkdownState {
     /// Byte offset into the page body.
     pub cursor: usize,
@@ -24,16 +27,12 @@ pub struct LiveMarkdownState {
     pub focused: bool,
     /// Preferred X for up/down moves, in galley-local coordinates.
     preferred_x: Option<f32>,
-}
-
-impl Default for LiveMarkdownState {
-    fn default() -> Self {
-        Self {
-            cursor: 0,
-            focused: false,
-            preferred_x: None,
-        }
-    }
+    /// Highlighted row in the `[[` suggestion popup.
+    suggestion_selected: usize,
+    /// The `[[` and query the highlight belongs to; the highlight resets when it changes.
+    suggestion_key: Option<(usize, String)>,
+    /// Byte offset of a `[[` whose popup the user dismissed with Escape.
+    suggestion_dismissed: Option<usize>,
 }
 
 /// Inclusive-exclusive byte range into the source body.
@@ -81,17 +80,40 @@ pub struct DocumentLayout {
 /// Draw the live markdown surface and apply basic source edits.
 pub(crate) fn show(
     ui: &mut egui::Ui,
-    _project: &Project,
-    _parent: &Path,
+    project: &Project,
+    parent: &Path,
     body: &mut String,
     state: &mut LiveMarkdownState,
 ) -> UiAction {
     // Apply keystrokes before rebuilding layout so this frame paints the
     // same source the caret/ranges describe (avoids a one-frame vertical jerk).
     if state.focused {
+        // While the `[[` popup is open, arrows/Enter/Tab/Escape drive it.
+        handle_suggestion_keys(ui, project, body, state);
         apply_text_input(ui, body, state);
     }
     state.cursor = state.cursor.min(body.len());
+
+    // Computed after the edits above so the popup never lags a keystroke.
+    let suggestions = if state.focused {
+        link_suggestions(project, body, state.cursor, state.suggestion_dismissed)
+    } else {
+        None
+    };
+    if link_context(body, state.cursor).map(|context| context.open) != state.suggestion_dismissed {
+        state.suggestion_dismissed = None;
+    }
+    match &suggestions {
+        Some(found) => {
+            let key = (found.context.open, found.query.clone());
+            if state.suggestion_key.as_ref() != Some(&key) {
+                state.suggestion_key = Some(key);
+                state.suggestion_selected = 0;
+            }
+            state.suggestion_selected = state.suggestion_selected.min(found.titles.len() - 1);
+        }
+        None => state.suggestion_key = None,
+    }
 
     let wrap_width = (ui.available_width() - 8.0).max(0.0);
     let spacing_y = ui.spacing().item_spacing.y;
@@ -100,23 +122,48 @@ pub(crate) fn show(
     let mut content_height = spacing_y;
     for block in &layout.blocks {
         let galley =
-            ui.fonts_mut(|fonts| fonts.layout_job(layout_job(body, block, ui, wrap_width)));
+            ui.fonts_mut(|fonts| fonts.layout_job(layout_job(project, body, block, ui, wrap_width)));
         content_height += galley.size().y + spacing_y;
         galleys.push(galley);
     }
 
     let desired = egui::vec2(ui.available_width(), content_height.max(120.0));
     let (rect, response) = ui.allocate_exact_size(desired, Sense::click_and_drag());
+
+    // A link opens on click unless the caret is already inside it, where a
+    // click places the caret so the link text can be edited.
+    let (was_focused, caret) = (state.focused, state.cursor);
+    let link_at = |pos: egui::Pos2| {
+        let cursor = cursor_at_pointer(body, &layout, &galleys, rect, pos, spacing_y);
+        wiki_link_at(body, &layout, cursor)
+            .filter(|(range, _)| !(was_focused && range.start < caret && caret < range.end))
+    };
+    let mut action = UiAction::None;
     if response.clicked() {
-        state.focused = true;
-        state.preferred_x = None;
-        response.request_focus();
-        if let Some(pos) = response.interact_pointer_pos() {
-            state.cursor = cursor_at_pointer(body, &layout, &galleys, rect, pos, spacing_y);
+        let link = response
+            .interact_pointer_pos()
+            .and_then(link_at)
+            .map(|(_, title)| title);
+        if let Some(title) = link {
+            let floating = ui.input(|input| input.modifiers.command);
+            action = open_link(project, parent, &title, floating);
+        } else {
+            state.focused = true;
+            state.preferred_x = None;
+            response.request_focus();
+            if let Some(pos) = response.interact_pointer_pos() {
+                state.cursor = cursor_at_pointer(body, &layout, &galleys, rect, pos, spacing_y);
+            }
         }
     } else if response.lost_focus() {
         state.focused = false;
         state.preferred_x = None;
+    }
+    if response
+        .hover_pos()
+        .is_some_and(|pos| link_at(pos).is_some())
+    {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
     if state.focused {
@@ -128,14 +175,16 @@ pub(crate) fn show(
                 EventFilter {
                     horizontal_arrows: true,
                     vertical_arrows: true,
-                    tab: false,
-                    escape: false,
+                    // Tab and Escape belong to the suggestion popup while it is open.
+                    tab: suggestions.is_some(),
+                    escape: suggestions.is_some(),
                 },
             );
         });
     }
 
     let painter = ui.painter_at(rect);
+    let mut caret_bottom = None;
     let mut cursor_y = rect.top() + spacing_y;
     // A cursor on a line boundary belongs to exactly one block (the later one),
     // otherwise it would be drawn at the end of one line and the start of the next.
@@ -160,12 +209,219 @@ pub(crate) fn show(
                 y..=(y + caret.height()),
                 egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
             );
+            caret_bottom = Some(egui::pos2(x, y + caret.height()));
         }
 
         cursor_y += galley.size().y + spacing_y;
     }
 
-    UiAction::None
+    if let (Some(found), Some(anchor)) = (&suggestions, caret_bottom) {
+        let picked = suggestion_popup(ui, &found.titles, state.suggestion_selected, anchor);
+        if let Some(index) = picked {
+            accept_suggestion(body, state, &found.context, &found.titles[index]);
+            // The press that picked a row may have taken focus from the surface.
+            state.focused = true;
+            response.request_focus();
+            ui.ctx().request_repaint();
+        }
+    }
+
+    action
+}
+
+/// Where a `[[` link is being typed: the caret sits inside its title text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinkContext {
+    /// Byte offset of the opening `[[`.
+    open: usize,
+    /// Byte offset where the title text starts.
+    query_start: usize,
+    /// End of the text an accepted suggestion replaces, including a `]]`
+    /// that is already there.
+    replace_end: usize,
+}
+
+/// Find the unfinished `[[` link around `cursor`, if any. Links never span lines.
+fn link_context(body: &str, cursor: usize) -> Option<LinkContext> {
+    if cursor > body.len() || !body.is_char_boundary(cursor) {
+        return None;
+    }
+    let line_start = body[..cursor].rfind('\n').map_or(0, |index| index + 1);
+    let before = &body[line_start..cursor];
+    let open = before.rfind("[[")?;
+    if before[open + 2..].contains(['[', ']']) {
+        return None;
+    }
+    let after = &body[cursor..];
+    let after = &after[..after.find('\n').unwrap_or(after.len())];
+    let replace_end = match after.find("]]") {
+        Some(close) if !after[..close].contains('[') => cursor + close + 2,
+        _ => cursor,
+    };
+    Some(LinkContext {
+        open: line_start + open,
+        query_start: line_start + open + 2,
+        replace_end,
+    })
+}
+
+/// Pages that match the text typed after `[[`.
+struct LinkSuggestions {
+    context: LinkContext,
+    query: String,
+    titles: Vec<String>,
+}
+
+fn link_suggestions(
+    project: &Project,
+    body: &str,
+    cursor: usize,
+    dismissed: Option<usize>,
+) -> Option<LinkSuggestions> {
+    let context = link_context(body, cursor)?;
+    if dismissed == Some(context.open) {
+        return None;
+    }
+    let query = &body[context.query_start..cursor];
+    let titles: Vec<String> = suggest_link_titles(
+        project
+            .pages()
+            .iter()
+            .map(|page| page.frontmatter.title.as_str())
+            .filter(|title| !title.trim().is_empty()),
+        query,
+        MAX_SUGGESTIONS,
+    )
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if titles.is_empty() {
+        return None;
+    }
+    // Nothing left to complete once a closed link already names the page.
+    let closed = context.replace_end > cursor;
+    if closed && titles.len() == 1 && body[context.query_start..context.replace_end - 2] == titles[0] {
+        return None;
+    }
+    Some(LinkSuggestions {
+        context,
+        query: query.to_owned(),
+        titles,
+    })
+}
+
+/// Swap the typed text for `title`, close the link, and put the caret after it.
+fn accept_suggestion(
+    body: &mut String,
+    state: &mut LiveMarkdownState,
+    context: &LinkContext,
+    title: &str,
+) {
+    let replacement = format!("{title}]]");
+    body.replace_range(context.query_start..context.replace_end, &replacement);
+    state.cursor = context.query_start + replacement.len();
+    state.preferred_x = None;
+    state.suggestion_key = None;
+}
+
+/// Consume the keys that drive the popup so they do not also edit the text.
+fn handle_suggestion_keys(
+    ui: &egui::Ui,
+    project: &Project,
+    body: &mut String,
+    state: &mut LiveMarkdownState,
+) {
+    let Some(found) = link_suggestions(project, body, state.cursor, state.suggestion_dismissed)
+    else {
+        return;
+    };
+    let none = egui::Modifiers::NONE;
+    let (up, down, enter, tab, escape) = ui.input_mut(|input| {
+        (
+            input.consume_key(none, egui::Key::ArrowUp),
+            input.consume_key(none, egui::Key::ArrowDown),
+            input.consume_key(none, egui::Key::Enter),
+            input.consume_key(none, egui::Key::Tab),
+            input.consume_key(none, egui::Key::Escape),
+        )
+    });
+    let count = found.titles.len();
+    let selected = state.suggestion_selected.min(count - 1);
+    if up {
+        state.suggestion_selected = (selected + count - 1) % count;
+    } else if down {
+        state.suggestion_selected = (selected + 1) % count;
+    }
+    if enter || tab {
+        accept_suggestion(body, state, &found.context, &found.titles[selected]);
+    } else if escape {
+        state.suggestion_dismissed = Some(found.context.open);
+    }
+}
+
+/// Floating list under the caret. Returns the row pressed with the mouse.
+///
+/// Rows react on press, not release: the press takes focus from the editor,
+/// and by release the popup would already be gone.
+fn suggestion_popup(
+    ui: &egui::Ui,
+    titles: &[String],
+    selected: usize,
+    anchor: egui::Pos2,
+) -> Option<usize> {
+    let mut picked = None;
+    egui::Area::new(egui::Id::new("wiki_link_suggestions"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(anchor + egui::vec2(0.0, 2.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(180.0);
+                for (index, title) in titles.iter().enumerate() {
+                    let row = ui.selectable_label(index == selected, title);
+                    if row.hovered() && ui.input(|input| input.pointer.primary_pressed()) {
+                        picked = Some(index);
+                    }
+                }
+            });
+        });
+    picked
+}
+
+/// The link to open for `title`: the page if it exists, otherwise a new note.
+fn open_link(project: &Project, parent: &Path, title: &str, floating: bool) -> UiAction {
+    match project.resolve_title(title) {
+        Some(id) if floating => UiAction::OpenFloating(id),
+        Some(id) => UiAction::OpenPage(id),
+        None => UiAction::SubmitCreatePage {
+            parent: parent.to_path_buf(),
+            template: TemplateKind::Note,
+            title: title.to_owned(),
+            linked_nation: None,
+        },
+    }
+}
+
+/// The text between the brackets of a `[[Title]]` run.
+fn wiki_title(run_text: &str) -> &str {
+    run_text
+        .strip_prefix("[[")
+        .and_then(|text| text.strip_suffix("]]"))
+        .unwrap_or(run_text)
+        .trim()
+}
+
+/// The wiki link run containing `cursor`, with its title.
+fn wiki_link_at(
+    source: &str,
+    layout: &DocumentLayout,
+    cursor: usize,
+) -> Option<(SourceRange, String)> {
+    let block = &layout.blocks[block_index_for_cursor(layout, cursor)?];
+    let run = block.runs.iter().find(|run| {
+        run.kind == RunKind::WikiLink && run.range.start <= cursor && cursor < run.range.end
+    })?;
+    let title = wiki_title(&source[run.range.clone()]);
+    (!title.is_empty()).then(|| (run.range.clone(), title.to_owned()))
 }
 
 /// Split `source` into blocks and inline runs with byte offsets.
@@ -260,14 +516,17 @@ fn inline_runs(source: &str, range: SourceRange) -> Vec<TextRun> {
             i = run.1;
             continue;
         }
-        let next = next_special(slice, i).unwrap_or(slice.len());
+        // Start after the current character: when a marker such as an unclosed
+        // `[[` fails to match, it is still text and must be drawn as plain.
+        let after = i + slice[i..].chars().next().map_or(1, char::len_utf8);
+        let next = next_special(slice, after).unwrap_or(slice.len());
         if next > i {
             runs.push(TextRun {
                 range: base + i..base + next,
                 kind: RunKind::Plain,
             });
         }
-        i = next.max(i + 1);
+        i = next;
     }
     if runs.is_empty() && !range.is_empty() {
         runs.push(TextRun {
@@ -313,7 +572,13 @@ fn next_special(slice: &str, start: usize) -> Option<usize> {
         .map(|(idx, _)| start + idx)
 }
 
-fn layout_job(source: &str, block: &Block, ui: &egui::Ui, wrap_width: f32) -> LayoutJob {
+fn layout_job(
+    project: &Project,
+    source: &str,
+    block: &Block,
+    ui: &egui::Ui,
+    wrap_width: f32,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap_width;
     if matches!(block.kind, BlockKind::Empty) {
@@ -342,7 +607,15 @@ fn layout_job(source: &str, block: &Block, ui: &egui::Ui, wrap_width: f32) -> La
     }
     for run in &block.runs {
         let text = &source[run.range.clone()];
-        job.append(text, 0.0, format_for(ui, block.kind, run.kind));
+        let mut format = format_for(ui, block.kind, run.kind);
+        if run.kind == RunKind::WikiLink {
+            // Links to pages that do not exist yet stand out.
+            if project.resolve_title(wiki_title(text)).is_none() {
+                format.color = ui.visuals().warn_fg_color;
+            }
+            format.underline = egui::Stroke::new(1.0, format.color);
+        }
+        job.append(text, 0.0, format);
     }
     job
 }
@@ -614,7 +887,55 @@ fn char_to_byte_index(slice: &str, chars: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_index_for_cursor, build_layout, BlockKind, RunKind};
+    use super::{
+        block_index_for_cursor, build_layout, link_context, wiki_link_at, BlockKind, RunKind,
+    };
+
+    #[test]
+    fn unclosed_markers_stay_visible_as_plain_text() {
+        for source in ["[", "[[", "[[Ro", "a [[Ro", "*x", "`x", "ünï [[é"] {
+            let layout = build_layout(source);
+            let shown: String = layout.blocks[0]
+                .runs
+                .iter()
+                .map(|run| &source[run.range.clone()])
+                .collect();
+            assert_eq!(shown, source);
+        }
+    }
+
+    #[test]
+    fn link_context_finds_unfinished_links() {
+        let source = "See [[Ro";
+        let context = link_context(source, source.len()).expect("inside link");
+        assert_eq!((context.open, context.query_start), (4, 6));
+        assert_eq!(context.replace_end, source.len());
+
+        // An existing closing `]]` is replaced along with the text.
+        let source = "See [[Ro]] now";
+        let context = link_context(source, 8).expect("inside closed link");
+        assert_eq!(context.replace_end, 10);
+
+        // Past the link, on another line, or before any `[[`: no context.
+        assert_eq!(link_context("See [[Rome]] now", 14), None);
+        assert_eq!(link_context("[[Ro\nme", 7), None);
+        assert_eq!(link_context("plain text", 5), None);
+
+        // A later link on the same line is not swallowed.
+        let source = "[[Ro and [[Rome]]";
+        let context = link_context(source, 4).expect("inside link");
+        assert_eq!(context.replace_end, 4);
+    }
+
+    #[test]
+    fn clicks_hit_only_complete_links() {
+        let source = "a [[Rome]] b";
+        let layout = build_layout(source);
+        assert_eq!(wiki_link_at(source, &layout, 1), None);
+        let (range, title) = wiki_link_at(source, &layout, 5).expect("link");
+        assert_eq!((range, title.as_str()), (2..10, "Rome"));
+        assert_eq!(wiki_link_at(source, &layout, 10), None);
+    }
 
     #[test]
     fn line_boundary_cursor_belongs_to_one_block() {

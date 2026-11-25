@@ -96,6 +96,42 @@ pub(crate) fn resolve_link<'a>(
     })
 }
 
+/// Titles worth offering while the user types `[[query`.
+///
+/// Ranked by prefix match, then substring match, then loose in-order letter
+/// match. Ties keep alphabetical order. Duplicate titles are listed once.
+pub(crate) fn suggest_link_titles<'a>(
+    titles: impl IntoIterator<Item = &'a str>,
+    query: &str,
+    limit: usize,
+) -> Vec<&'a str> {
+    let needle = query.trim().to_lowercase();
+    let mut scored: Vec<(u8, String, &'a str)> = Vec::new();
+    for title in titles {
+        let lower = title.to_lowercase();
+        let rank = if needle.is_empty() || lower.starts_with(&needle) {
+            0
+        } else if lower.contains(&needle) {
+            1
+        } else if is_subsequence(&needle, &lower) {
+            2
+        } else {
+            continue;
+        };
+        if scored.iter().any(|(_, seen, _)| *seen == lower) {
+            continue;
+        }
+        scored.push((rank, lower, title));
+    }
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().take(limit).map(|(_, _, title)| title).collect()
+}
+
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut hay = haystack.chars();
+    needle.chars().all(|wanted| hay.any(|ch| ch == wanted))
+}
+
 fn rewrite_list(values: &mut [String], old: &str, new: &str) {
     for value in values {
         rewrite_exact(value, old, new);
@@ -161,8 +197,17 @@ fn percent_encode(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_wiki_links, resolve_link, rewrite_wiki_links};
+    use super::{render_wiki_links, resolve_link, rewrite_wiki_links, suggest_link_titles};
     use crate::backend::page::Frontmatter;
+
+    #[test]
+    fn suggestions_rank_prefix_then_substring_then_loose() {
+        let titles = ["Roman Empire", "Rome", "Caesar", "Prom", "rome", "Republic of Gaul"];
+        assert_eq!(suggest_link_titles(titles, "rom", 10), ["Roman Empire", "Rome", "Prom"]);
+        assert_eq!(suggest_link_titles(titles, "rpg", 10), ["Republic of Gaul"]);
+        assert_eq!(suggest_link_titles(titles, "zzz", 10), Vec::<&str>::new());
+        assert_eq!(suggest_link_titles(titles, "", 2).len(), 2);
+    }
 
     #[test]
     fn resolves_title_stem_and_miss() {

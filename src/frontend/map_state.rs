@@ -7,7 +7,8 @@ use egui::{ColorImage, Context, Pos2, TextureHandle, TextureOptions};
 use uuid::Uuid;
 
 use crate::backend::{
-    ChunkPos, ChunkRect, ClaimChange, ClaimEditor, MapDoc, MapMeta, MotError, Result, CHUNK_BLOCKS,
+    BlockPos, BlockRect, ChunkPos, ChunkRect, ClaimEdit, ClaimEditor, MapDoc, MapMeta, MotError,
+    Result, CHUNK_BLOCKS,
 };
 use crate::frontend::map_overlay::OverlayCache;
 
@@ -52,13 +53,20 @@ impl MapTool {
         }
     }
 
-    pub(crate) fn hint(self) -> &'static str {
+    pub(crate) fn hint(self, blocks: bool) -> &'static str {
         match self {
             Self::Pan => "Drag to move the map. Middle or right drag also pans with any tool.",
+            Self::Brush if blocks => "Drag to claim individual blocks. Key: B",
             Self::Brush => "Drag to claim chunks for the selected nation. Key: B",
+            Self::Rectangle if blocks => "Drag a box of blocks. Hold Shift to clear instead. Key: R",
             Self::Rectangle => "Drag a box of chunks. Hold Shift to clear instead. Key: R",
+            Self::Fill if blocks => {
+                "Fill the area inside a border of blocks. Hold Shift to clear instead. Key: F"
+            }
             Self::Fill => "Fill a connected area. Hold Shift to clear instead. Key: F",
+            Self::Eraser if blocks => "Drag to clear individual blocks. Key: E",
             Self::Eraser => "Drag to clear chunks. Key: E",
+            Self::Eyedropper if blocks => "Click a block to select its nation. Key: I",
             Self::Eyedropper => "Click a claimed chunk to select its nation. Key: I",
         }
     }
@@ -91,6 +99,14 @@ pub enum Gesture {
     Rect {
         anchor: ChunkPos,
         current: ChunkPos,
+    },
+    BlockStroke {
+        last: BlockPos,
+        paint: Paint,
+    },
+    BlockRect {
+        anchor: BlockPos,
+        current: BlockPos,
     },
 }
 
@@ -160,6 +176,11 @@ impl Projection {
     pub(crate) fn screen_to_chunk(&self, pos: Pos2) -> ChunkPos {
         let (x, z) = self.screen_to_block(pos);
         ChunkPos::from_block_f(x, z)
+    }
+
+    pub(crate) fn screen_to_block_pos(&self, pos: Pos2) -> BlockPos {
+        let (x, z) = self.screen_to_block(pos);
+        BlockPos::from_block_f(x, z)
     }
 
     /// Edge length of one chunk on screen.
@@ -235,6 +256,8 @@ pub struct MapSession {
     pub dirty: bool,
     pub tool: MapTool,
     pub brush_size: i32,
+    /// When set, brush, rectangle, fill, and eraser work on single blocks.
+    pub block_claims: bool,
     pub active_nation: Option<Uuid>,
     pub show_grid: bool,
     pub view: View,
@@ -245,7 +268,7 @@ pub struct MapSession {
     pub picking_reference: bool,
     pub references: Vec<ReferencePoint>,
     pub message: String,
-    counts: BTreeMap<Uuid, usize>,
+    counts: BTreeMap<Uuid, u64>,
     counts_dirty: bool,
 }
 
@@ -277,6 +300,7 @@ impl MapSession {
             dirty: false,
             tool: MapTool::Brush,
             brush_size: 1,
+            block_claims: false,
             active_nation: None,
             show_grid: true,
             view: View {
@@ -306,10 +330,14 @@ impl MapSession {
         self.meta.chunk_extent()
     }
 
-    /// Claimed chunks per nation, recomputed only after edits.
-    pub(crate) fn counts(&mut self) -> &BTreeMap<Uuid, usize> {
+    pub(crate) fn block_extent(&self) -> BlockRect {
+        self.meta.block_extent()
+    }
+
+    /// Claimed blocks per nation, recomputed only after edits.
+    pub(crate) fn counts(&mut self) -> &BTreeMap<Uuid, u64> {
         if self.counts_dirty {
-            self.counts = self.editor.layer().counts();
+            self.counts = self.editor.layer().block_area();
             self.counts_dirty = false;
         }
         &self.counts
@@ -375,10 +403,60 @@ impl MapSession {
                     }
                 }
             }
-            Gesture::Stroke { .. } | Gesture::None => {}
+            Gesture::BlockRect { anchor, current } => {
+                let paint = if clear { Some(Paint::Clear) } else { self.nation_paint() };
+                if let Some(paint) = paint {
+                    self.paint_block_rect(BlockRect::from_corners(anchor, current), paint.owner());
+                }
+            }
+            Gesture::Stroke { .. } | Gesture::BlockStroke { .. } | Gesture::None => {}
         }
         self.editor.commit();
         self.gesture = Gesture::None;
+    }
+
+    /// Drop an in-progress rectangle without painting it. A stroke is kept.
+    pub(crate) fn cancel_gesture(&mut self) {
+        if matches!(
+            self.gesture,
+            Gesture::Stroke { .. } | Gesture::BlockStroke { .. }
+        ) {
+            self.editor.commit();
+        }
+        self.gesture = Gesture::None;
+    }
+
+    pub(crate) fn begin_block_stroke(&mut self, at: BlockPos) {
+        let Some(paint) = self.brush_paint() else {
+            return;
+        };
+        self.message.clear();
+        self.stamp_blocks(at, paint.owner());
+        self.gesture = Gesture::BlockStroke { last: at, paint };
+    }
+
+    pub(crate) fn extend_block_stroke(&mut self, to: BlockPos) {
+        let Gesture::BlockStroke { last, paint } = self.gesture else {
+            return;
+        };
+        if last == to {
+            return;
+        }
+        for (x, z) in line_between_xy((last.x, last.z), (to.x, to.z))
+            .into_iter()
+            .skip(1)
+        {
+            self.stamp_blocks(BlockPos::new(x, z), paint.owner());
+        }
+        self.gesture = Gesture::BlockStroke { last: to, paint };
+    }
+
+    pub(crate) fn begin_block_rect(&mut self, at: BlockPos) {
+        self.message.clear();
+        self.gesture = Gesture::BlockRect {
+            anchor: at,
+            current: at,
+        };
     }
 
     /// Flood fill the connected area under `at`. `clear` empties it instead.
@@ -397,6 +475,38 @@ impl MapSession {
             self.paint_chunk(pos, paint.owner());
         }
         self.editor.commit();
+    }
+
+    /// Flood fill connected blocks of the same owner. A border of claimed blocks stops it.
+    pub(crate) fn fill_block(&mut self, at: BlockPos, clear: bool) {
+        let paint = if clear { Some(Paint::Clear) } else { self.nation_paint() };
+        let Some(paint) = paint else {
+            return;
+        };
+        let Some(region) = self
+            .editor
+            .layer()
+            .block_region(at, self.block_extent(), MAX_FILL_CHUNKS)
+        else {
+            self.message = "That area is too large to fill. Outline it first.".to_owned();
+            return;
+        };
+        self.message.clear();
+        for pos in region.chunks {
+            self.paint_chunk(pos, paint.owner());
+        }
+        for pos in region.blocks {
+            self.paint_block(pos, paint.owner());
+        }
+        self.editor.commit();
+    }
+
+    /// Select the nation that owns the block under the cursor.
+    pub(crate) fn pick_block(&mut self, at: BlockPos) {
+        if let Some(owner) = self.editor.layer().block_owner(at) {
+            self.active_nation = Some(owner);
+            self.message.clear();
+        }
     }
 
     /// Select the nation that owns the chunk under the cursor.
@@ -426,12 +536,16 @@ impl MapSession {
         }
     }
 
-    fn after_history(&mut self, changes: &[ClaimChange]) {
+    fn after_history(&mut self, changes: &[ClaimEdit]) {
         if changes.is_empty() {
             return;
         }
         for change in changes {
-            self.overlay.mark_chunk(change.pos);
+            let chunk = match *change {
+                ClaimEdit::Chunk(change) => change.pos,
+                ClaimEdit::Block(change) => change.pos.chunk(),
+            };
+            self.overlay.mark_detail(chunk);
         }
         self.dirty = true;
         self.counts_dirty = true;
@@ -450,9 +564,62 @@ impl MapSession {
         }
     }
 
+    fn paint_block_rect(&mut self, rect: BlockRect, owner: Option<Uuid>) {
+        let Some(rect) = rect.clipped_to(self.block_extent()) else {
+            return;
+        };
+        let chunk_min = rect.min.chunk();
+        let chunk_max = rect.max.chunk();
+        let span = i64::from(chunk_max.x - chunk_min.x + 1) * i64::from(chunk_max.z - chunk_min.z + 1);
+        if span > i64::try_from(MAX_FILL_CHUNKS).unwrap_or(i64::MAX) {
+            self.message = "That area is too large to fill. Outline it first.".to_owned();
+            return;
+        }
+        self.message.clear();
+        let bounds = self.block_extent();
+        for z in chunk_min.z..=chunk_max.z {
+            for x in chunk_min.x..=chunk_max.x {
+                let chunk = ChunkPos::new(x, z);
+                let Some(chunk_blocks) = BlockRect::of_chunk(chunk) else {
+                    continue;
+                };
+                if rect.contains_rect(chunk_blocks) && bounds.contains_rect(chunk_blocks) {
+                    self.paint_chunk(chunk, owner);
+                } else {
+                    for pos in chunk_blocks.positions() {
+                        if rect.contains(pos) && bounds.contains(pos) {
+                            self.paint_block(pos, owner);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn stamp_blocks(&mut self, center: BlockPos, owner: Option<Uuid>) {
+        let size = self.brush_size.clamp(1, MAX_BRUSH);
+        let low = (size - 1) / 2;
+        let min = BlockPos::new(center.x - low, center.z - low);
+        let footprint =
+            BlockRect::from_corners(min, BlockPos::new(min.x + size - 1, min.z + size - 1));
+        if let Some(rect) = footprint.clipped_to(self.block_extent()) {
+            for pos in rect.positions() {
+                self.paint_block(pos, owner);
+            }
+        }
+    }
+
+    fn paint_block(&mut self, pos: BlockPos, owner: Option<Uuid>) {
+        if self.editor.paint_block(pos, owner) {
+            self.overlay.mark_detail(pos.chunk());
+            self.dirty = true;
+            self.counts_dirty = true;
+        }
+    }
+
     fn paint_chunk(&mut self, pos: ChunkPos, owner: Option<Uuid>) {
         if self.editor.paint(pos, owner) {
-            self.overlay.mark_chunk(pos);
+            self.overlay.mark_detail(pos);
             self.dirty = true;
             self.counts_dirty = true;
         }
@@ -529,13 +696,20 @@ fn cut_tile(
 
 /// Chunks on the straight line from `from` to `to`, both included.
 fn line_between(from: ChunkPos, to: ChunkPos) -> Vec<ChunkPos> {
-    let (dx, dz) = ((to.x - from.x).abs(), -(to.z - from.z).abs());
-    let step_x = if from.x < to.x { 1 } else { -1 };
-    let step_z = if from.z < to.z { 1 } else { -1 };
+    line_between_xy((from.x, from.z), (to.x, to.z))
+        .into_iter()
+        .map(|(x, z)| ChunkPos::new(x, z))
+        .collect()
+}
+
+fn line_between_xy(from: (i32, i32), to: (i32, i32)) -> Vec<(i32, i32)> {
+    let (dx, dz) = ((to.0 - from.0).abs(), -(to.1 - from.1).abs());
+    let step_x = if from.0 < to.0 { 1 } else { -1 };
+    let step_z = if from.1 < to.1 { 1 } else { -1 };
     let mut error = dx + dz;
-    let (mut x, mut z) = (from.x, from.z);
+    let (mut x, mut z) = from;
     let mut points = vec![from];
-    while (x, z) != (to.x, to.z) {
+    while (x, z) != to {
         let doubled = 2 * error;
         if doubled >= dz {
             error += dz;
@@ -545,7 +719,7 @@ fn line_between(from: ChunkPos, to: ChunkPos) -> Vec<ChunkPos> {
             error += dx;
             z += step_z;
         }
-        points.push(ChunkPos::new(x, z));
+        points.push((x, z));
     }
     points
 }

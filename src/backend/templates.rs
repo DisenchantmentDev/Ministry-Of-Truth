@@ -1,5 +1,6 @@
 use crate::backend::event::EventType;
 use crate::backend::page::Frontmatter;
+use crate::backend::project::{EVENTS_DIR, NATIONS_DIR, PLAYERS_DIR};
 
 /// A scaffold copied into a new page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,9 +37,9 @@ impl TemplateKind {
     pub(crate) fn section(self) -> Option<&'static str> {
         match self {
             Self::Note => None,
-            Self::Assassination | Self::War | Self::Event => Some("events"),
-            Self::Player => Some("players"),
-            Self::Nation => Some("nations"),
+            Self::Assassination | Self::War | Self::Event => Some(EVENTS_DIR),
+            Self::Player => Some(PLAYERS_DIR),
+            Self::Nation => Some(NATIONS_DIR),
         }
     }
 }

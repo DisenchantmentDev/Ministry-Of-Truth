@@ -16,6 +16,10 @@ use crate::backend::page::{Frontmatter, Page, PageData};
 
 const SCHEMA: u32 = 1;
 const MAPS_DIR: &str = "maps";
+/// Default folders for nation, player, and event pages.
+pub(crate) const NATIONS_DIR: &str = "Nations";
+pub(crate) const PLAYERS_DIR: &str = "Players";
+pub(crate) const EVENTS_DIR: &str = "Events";
 const MAP_IMAGE_EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
 
 pub(crate) fn parse_start_date(text: &str) -> Result<Option<NaiveDate>> {
@@ -227,6 +231,7 @@ impl Project {
         if let Some(summary) = self.maps.iter_mut().find(|map| map.slug == slug) {
             summary.meta = meta.clone();
             summary.counts = claims.counts();
+            summary.block_area = claims.block_area();
         }
         Ok(())
     }
@@ -470,17 +475,17 @@ fn write_page(path: &Path, frontmatter: &Frontmatter, body: &str) -> Result<()> 
 fn write_scaffold(root: &Path, name: &str) -> Result<()> {
     write_page(&root.join("index.md"), &Frontmatter::note(name.to_owned()), "")?;
     write_page(
-        &root.join("nations").join("index.md"),
+        &root.join(NATIONS_DIR).join("index.md"),
         &Frontmatter::note("Nations".to_owned()),
         "",
     )?;
     write_page(
-        &root.join("players").join("index.md"),
+        &root.join(PLAYERS_DIR).join("index.md"),
         &Frontmatter::note("Players".to_owned()),
         "",
     )?;
     write_page(
-        &root.join("events").join("index.md"),
+        &root.join(EVENTS_DIR).join("index.md"),
         &Frontmatter::note("Events".to_owned()),
         "",
     )?;
@@ -532,6 +537,7 @@ fn scan_maps(maps_root: &Path, warnings: &mut Vec<String>) -> Vec<MapSummary> {
                 slug,
                 meta,
                 counts: claims.counts(),
+                block_area: claims.block_area(),
             }),
             Err(err) => warnings.push(format!("{}: {err}", dir.display())),
         }
@@ -643,7 +649,7 @@ fn slugify(title: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::Project;
+    use super::{Project, NATIONS_DIR, PLAYERS_DIR};
     use crate::backend::page::{PageData, PageKind};
     use std::fs;
     use std::path::PathBuf;
@@ -700,7 +706,7 @@ mod tests {
 
         let nation = project
             .create_page(
-                &dir.0.join("nations"),
+                &dir.0.join(NATIONS_DIR),
                 crate::backend::page::Frontmatter::nation("Rome".to_owned()),
                 "",
             )
@@ -712,6 +718,7 @@ mod tests {
         doc.meta.px_per_block = 4.0;
         project.save_map(&slug, &doc.meta, &doc.claims).expect("save");
         assert_eq!(project.maps()[0].counts.get(&nation), Some(&2));
+        assert_eq!(project.maps()[0].block_area.get(&nation), Some(&512));
 
         let reopened = Project::open(&dir.0).expect("reopen");
         let reloaded = reopened.load_map(&slug).expect("reload");
@@ -732,7 +739,7 @@ mod tests {
         let mut project = Project::create(&dir.0, "Campaign", None).expect("create");
         let rome = project
             .create_page(
-                &dir.0.join("nations"),
+                &dir.0.join(NATIONS_DIR),
                 crate::backend::page::Frontmatter::nation("Rome".to_owned()),
                 "Ruled by [[Caesar]].\n",
             )
@@ -740,7 +747,7 @@ mod tests {
         let mut caesar = crate::backend::page::Frontmatter::player("Caesar".to_owned());
         caesar.player_mut().expect("player").nation = Some("Rome".to_owned());
         let player_id = project
-            .create_page(&dir.0.join("players"), caesar, "Citizen of [[Rome]].\n")
+            .create_page(&dir.0.join(PLAYERS_DIR), caesar, "Citizen of [[Rome]].\n")
             .expect("player");
 
         let loaded = project.load_page(player_id).expect("load");

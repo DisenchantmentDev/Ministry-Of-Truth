@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use egui::{Align2, Color32, FontId, Key, Modifiers, PointerButton, Rect, Sense, Stroke, StrokeKind};
 use uuid::Uuid;
 
-use crate::backend::{ChunkPos, ChunkRect, NationInfo, Project, CHUNK_BLOCKS};
+use crate::backend::{
+    format_claim_area, BlockPos, BlockRect, ChunkPos, ChunkRect, NationInfo, Project, CHUNK_BLOCKS,
+};
 use crate::frontend::map_overlay::ORPHAN_COLOR;
 use crate::frontend::map_state::{Gesture, MapSession, MapTool, Projection, View, MAX_BRUSH};
 use crate::frontend::session::Session;
@@ -61,7 +63,7 @@ fn toolbar(ui: &mut egui::Ui, map: &mut MapSession) -> UiAction {
         for tool in MapTool::ALL {
             if ui
                 .selectable_label(map.tool == tool, tool.label())
-                .on_hover_text(tool.hint())
+                .on_hover_text(tool.hint(map.block_claims))
                 .clicked()
             {
                 map.tool = tool;
@@ -71,9 +73,16 @@ fn toolbar(ui: &mut egui::Ui, map: &mut MapSession) -> UiAction {
         let sized = matches!(map.tool, MapTool::Brush | MapTool::Eraser);
         ui.add_enabled_ui(sized, |ui| {
             ui.label("Brush");
-            ui.add(egui::Slider::new(&mut map.brush_size, 1..=MAX_BRUSH).suffix(" chunks"));
+            let unit = if map.block_claims { " blocks" } else { " chunks" };
+            ui.add(egui::Slider::new(&mut map.brush_size, 1..=MAX_BRUSH).suffix(unit));
         });
         ui.separator();
+        let blocks = ui
+            .checkbox(&mut map.block_claims, "Blocks")
+            .on_hover_text("Claim individual blocks. Draw a border, then Fill the inside. Off claims whole chunks.");
+        if blocks.changed() {
+            map.cancel_gesture();
+        }
         ui.checkbox(&mut map.show_grid, "Grid");
         if ui.button("Fit").on_hover_text("Show the whole map").clicked() {
             map.fit_pending = true;
@@ -105,7 +114,7 @@ fn toolbar(ui: &mut egui::Ui, map: &mut MapSession) -> UiAction {
         }
     });
     if map.message.is_empty() {
-        ui.label(egui::RichText::new(map.tool.hint()).small().weak());
+        ui.label(egui::RichText::new(map.tool.hint(map.block_claims)).small().weak());
     } else {
         ui.colored_label(ui.visuals().warn_fg_color, &map.message);
     }
@@ -149,14 +158,14 @@ fn legend(ui: &mut egui::Ui, map: &mut MapSession, nations: &[NationInfo]) -> Ui
                 map.message.clear();
             }
             if let Some(count) = counts.get(&nation.id) {
-                ui.label(egui::RichText::new(area_text(*count)).small().weak());
+                ui.label(egui::RichText::new(format_claim_area(*count)).small().weak());
             }
             if ui.small_button("Open").on_hover_text("Open the nation page").clicked() {
                 action = UiAction::OpenFloating(nation.id);
             }
         });
     }
-    let orphans: Vec<(Uuid, usize)> = counts
+    let orphans: Vec<(Uuid, u64)> = counts
         .iter()
         .filter(|(id, _)| !nations.iter().any(|nation| nation.id == **id))
         .map(|(id, count)| (*id, *count))
@@ -166,7 +175,7 @@ fn legend(ui: &mut egui::Ui, map: &mut MapSession, nations: &[NationInfo]) -> Ui
             swatch(ui, ORPHAN_COLOR);
             let short: String = id.to_string().chars().take(8).collect();
             ui.label(format!("Unknown nation {short}"));
-            ui.label(egui::RichText::new(area_text(count)).small().weak());
+            ui.label(egui::RichText::new(format_claim_area(count)).small().weak());
             if ui
                 .small_button("Clear")
                 .on_hover_text("Remove these chunks. The nation page no longer exists.")
@@ -177,12 +186,6 @@ fn legend(ui: &mut egui::Ui, map: &mut MapSession, nations: &[NationInfo]) -> Ui
         });
     }
     action
-}
-
-fn area_text(chunks: usize) -> String {
-    let side = u64::try_from(CHUNK_BLOCKS).unwrap_or(16);
-    let blocks = u64::try_from(chunks).unwrap_or(0) * side * side;
-    format!("{chunks} chunks, {blocks} blocks²")
 }
 
 fn swatch(ui: &mut egui::Ui, [red, green, blue]: [u8; 3]) {
@@ -379,6 +382,34 @@ fn paint_grid(painter: &egui::Painter, map: &MapSession, projection: &Projection
             painter.line_segment([from, to], if region { region_stroke } else { chunk_stroke });
         }
     }
+    if map.block_claims {
+        paint_block_grid(painter, map, projection, canvas);
+    }
+}
+
+fn paint_block_grid(painter: &egui::Painter, map: &MapSession, projection: &Projection, canvas: Rect) {
+    let block_px = projection.chunk_screen_size() / f64::from(CHUNK_BLOCKS);
+    if block_px < 8.0 {
+        return;
+    }
+    let visible = BlockRect::from_corners(
+        projection.screen_to_block_pos(canvas.min),
+        projection.screen_to_block_pos(canvas.max),
+    );
+    let Some(area) = visible.clipped_to(map.block_extent()) else {
+        return;
+    };
+    let stroke = Stroke::new(1.0, Color32::from_white_alpha(40));
+    for x in area.min.x..=area.max.x + 1 {
+        let from = projection.block_to_screen(f64::from(x), f64::from(area.min.z));
+        let to = projection.block_to_screen(f64::from(x), f64::from(area.max.z + 1));
+        painter.line_segment([from, to], stroke);
+    }
+    for z in area.min.z..=area.max.z + 1 {
+        let from = projection.block_to_screen(f64::from(area.min.x), f64::from(z));
+        let to = projection.block_to_screen(f64::from(area.max.x + 1), f64::from(z));
+        painter.line_segment([from, to], stroke);
+    }
 }
 
 /// Start, continue, and finish tool gestures from pointer input.
@@ -410,6 +441,20 @@ fn handle_pointer(
     let Some(pos) = pointer else {
         return;
     };
+    if map.block_claims {
+        let block = projection.screen_to_block_pos(pos);
+        match map.gesture {
+            Gesture::BlockStroke { .. } => map.extend_block_stroke(block),
+            Gesture::BlockRect { anchor, .. } => {
+                map.gesture = Gesture::BlockRect {
+                    anchor,
+                    current: block,
+                };
+            }
+            Gesture::Stroke { .. } | Gesture::Rect { .. } | Gesture::None => {}
+        }
+        return;
+    }
     let chunk = projection.screen_to_chunk(pos);
     match map.gesture {
         Gesture::Stroke { .. } => map.extend_stroke(chunk),
@@ -419,7 +464,7 @@ fn handle_pointer(
                 current: chunk,
             };
         }
-        Gesture::None => {}
+        Gesture::BlockStroke { .. } | Gesture::BlockRect { .. } | Gesture::None => {}
     }
 }
 
@@ -430,6 +475,17 @@ fn press(map: &mut MapSession, projection: &Projection, pos: egui::Pos2, shift: 
         if x >= 0.0 && y >= 0.0 && x < f64::from(size[0]) && y < f64::from(size[1]) {
             map.add_reference([x.floor(), y.floor()]);
             map.picking_reference = false;
+        }
+        return;
+    }
+    if map.block_claims {
+        let block = projection.screen_to_block_pos(pos);
+        match map.tool {
+            MapTool::Pan => {}
+            MapTool::Brush | MapTool::Eraser => map.begin_block_stroke(block),
+            MapTool::Rectangle => map.begin_block_rect(block),
+            MapTool::Fill => map.fill_block(block, shift),
+            MapTool::Eyedropper => map.pick_block(block),
         }
         return;
     }
@@ -461,6 +517,13 @@ fn chunk_rect_on_screen(projection: &Projection, rect: ChunkRect) -> Rect {
     )
 }
 
+fn block_rect_on_screen(projection: &Projection, rect: BlockRect) -> Rect {
+    Rect::from_min_max(
+        projection.block_to_screen(f64::from(rect.min.x), f64::from(rect.min.z)),
+        projection.block_to_screen(f64::from(rect.max.x + 1), f64::from(rect.max.z + 1)),
+    )
+}
+
 fn paint_tool_preview(
     painter: &egui::Painter,
     map: &MapSession,
@@ -477,10 +540,39 @@ fn paint_tool_preview(
         painter.rect_stroke(rect, 0.0, outline, StrokeKind::Inside);
         return;
     }
+    if let Gesture::BlockRect { anchor, current } = map.gesture {
+        let rect = block_rect_on_screen(projection, BlockRect::from_corners(anchor, current));
+        let [red, green, blue] = nation_color(nations, map.active_nation);
+        painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(red, green, blue, 70));
+        painter.rect_stroke(rect, 0.0, outline, StrokeKind::Inside);
+        return;
+    }
     let Some(pos) = response.hover_pos() else {
         return;
     };
     if panning {
+        return;
+    }
+    if map.block_claims {
+        let block = projection.screen_to_block_pos(pos);
+        let footprint = match map.tool {
+            MapTool::Brush | MapTool::Eraser => {
+                let size = map.brush_size.clamp(1, MAX_BRUSH);
+                let low = (size - 1) / 2;
+                let min = BlockPos::new(block.x - low, block.z - low);
+                BlockRect::from_corners(min, BlockPos::new(min.x + size - 1, min.z + size - 1))
+            }
+            MapTool::Rectangle | MapTool::Fill | MapTool::Eyedropper => {
+                BlockRect::from_corners(block, block)
+            }
+            MapTool::Pan => return,
+        };
+        painter.rect_stroke(
+            block_rect_on_screen(projection, footprint),
+            0.0,
+            outline,
+            StrokeKind::Outside,
+        );
         return;
     }
     let chunk = projection.screen_to_chunk(pos);
@@ -533,8 +625,9 @@ fn paint_status(
         return;
     };
     let (x, z) = projection.screen_to_block(pos);
-    let chunk = projection.screen_to_chunk(pos);
-    let owner = match map.editor.layer().get(chunk) {
+    let block = BlockPos::from_block_f(x, z);
+    let chunk = block.chunk();
+    let owner = match map.editor.layer().block_owner(block) {
         Some(id) => nations
             .iter()
             .find(|nation| nation.id == id)
@@ -610,7 +703,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mot-view-{}", Uuid::new_v4()));
         let mut project = Project::create(&dir, "Campaign", None).expect("project");
         let nation = project
-            .create_page(&dir.join("nations"), Frontmatter::nation("Rome".to_owned()), "")
+            .create_page(&dir.join("Nations"), Frontmatter::nation("Rome".to_owned()), "")
             .expect("nation");
         let source = dir.join("export.png");
         image::RgbaImage::new(512, 512).save(&source).expect("png");

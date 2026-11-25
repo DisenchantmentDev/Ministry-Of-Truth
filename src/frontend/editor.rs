@@ -4,7 +4,9 @@ use egui_commonmark::CommonMarkCache;
 
 use uuid::Uuid;
 
-use crate::backend::{PageData, PageKind, Project, TemplateKind, CHUNK_BLOCKS};
+use crate::backend::{
+    format_claim_area, PageData, PageKind, Project, TemplateKind, EVENTS_DIR,
+};
 use crate::frontend::fields;
 use crate::frontend::layout::{centered_column, CONTENT_WIDTH};
 use crate::frontend::live_markdown::{self, LiveMarkdownState};
@@ -77,14 +79,21 @@ fn header(ui: &mut egui::Ui, project: &Project, open: &mut OpenPage) -> UiAction
     match &mut open.frontmatter.data {
         PageData::Note => UiAction::None,
         PageData::Nation(meta) => {
-            let leaders = fields::string_list(ui, "leaders", "Leaders", &mut meta.leaders, project);
-            fields::plain_text(ui, "Location", &mut meta.location);
+            let leaders = fields::string_list(
+                ui,
+                "leaders",
+                "Leaders",
+                &mut meta.leaders,
+                project,
+                &[PageKind::Player],
+            );
+            fields::link_text(ui, project, &[PageKind::Nation], "Location", &mut meta.location);
             fields::optional_day(ui, "Founded day", &mut meta.founded);
             fields::nation_color(ui, id, meta);
             leaders
         }
         PageData::Player(meta) => {
-            fields::optional_text(ui, "Nation", &mut meta.nation);
+            fields::optional_link(ui, project, &[PageKind::Nation], "Nation", &mut meta.nation);
             if let Some(nation) = meta.nation.clone() {
                 if let Some(page) = project.resolve_title(&nation) {
                     if ui.button("Open nation").clicked() {
@@ -99,10 +108,24 @@ fn header(ui: &mut egui::Ui, project: &Project, open: &mut OpenPage) -> UiAction
         PageData::Event(meta) => {
             fields::optional_day(ui, "Day", &mut meta.day);
             fields::event_type(ui, &mut meta.event_type);
-            fields::plain_text(ui, "Location", &mut meta.location);
-            let nations = fields::string_list(ui, "nations", "Nations", &mut meta.nations, project);
+            fields::link_text(ui, project, &[PageKind::Nation], "Location", &mut meta.location);
+            let nations = fields::string_list(
+                ui,
+                "nations",
+                "Nations",
+                &mut meta.nations,
+                project,
+                &[PageKind::Nation],
+            );
             let participants =
-                fields::string_list(ui, "participants", "Participants", &mut meta.participants, project);
+                fields::string_list(
+                    ui,
+                    "participants",
+                    "Participants",
+                    &mut meta.participants,
+                    project,
+                    &[PageKind::Player, PageKind::Nation],
+                );
             merge(nations, participants)
         }
     }
@@ -166,11 +189,9 @@ fn nation_maps(ui: &mut egui::Ui, project: &Project, nation: Uuid) -> UiAction {
             if ui.button(&map.meta.name).on_hover_text("Open map").clicked() {
                 action = UiAction::ShowMap(map.slug.clone());
             }
-            match map.counts.get(&nation) {
-                Some(chunks) => {
-                    let side = u64::try_from(CHUNK_BLOCKS).unwrap_or(16);
-                    let blocks = u64::try_from(*chunks).unwrap_or(0) * side * side;
-                    ui.label(format!("{chunks} chunks, {blocks} blocks²"));
+            match map.block_area.get(&nation) {
+                Some(blocks) => {
+                    ui.label(format_claim_area(*blocks));
                 }
                 None => {
                     ui.label(egui::RichText::new("no claims").weak());
@@ -185,7 +206,7 @@ fn nation_events(ui: &mut egui::Ui, project: &Project, nation: &str) -> UiAction
     let mut action = UiAction::None;
     if ui.button("New linked event").clicked() {
         action = UiAction::OpenDialog(Dialog::CreatePage {
-            parent: Path::new("events").to_path_buf(),
+            parent: Path::new(EVENTS_DIR).to_path_buf(),
             template: TemplateKind::Event,
             title: String::new(),
             linked_nation: Some(nation.to_owned()),
@@ -236,24 +257,15 @@ fn notes(
 
 fn mode_bar(ui: &mut egui::Ui, mode: &mut EditMode) {
     ui.horizontal(|ui| {
-        if ui.selectable_label(*mode == EditMode::Edit, "Edit").clicked() {
-            *mode = EditMode::Edit;
-        }
-        if ui
-            .selectable_label(*mode == EditMode::Preview, "Preview")
-            .clicked()
-        {
-            *mode = EditMode::Preview;
-        }
-        if ui.selectable_label(*mode == EditMode::Split, "Split").clicked() {
-            *mode = EditMode::Split;
-        }
-        if ui
-            .selectable_label(*mode == EditMode::Live, "Live")
-            .on_hover_text("Live markdown rendering")
-            .clicked()
-        {
-            *mode = EditMode::Live;
+        for (value, label) in [
+            (EditMode::Live, "Edit"),
+            (EditMode::Edit, "Raw"),
+            (EditMode::Split, "Split"),
+            (EditMode::Preview, "Preview"),
+        ] {
+            if ui.selectable_label(*mode == value, label).clicked() {
+                *mode = value;
+            }
         }
     });
 }

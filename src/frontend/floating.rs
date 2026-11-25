@@ -10,11 +10,16 @@ pub(crate) fn show(ui: &mut egui::Ui, project: &Project, floating: &mut [Floatin
         if !page.visible {
             continue;
         }
-        let title = page.open.frontmatter.title.clone();
+        let title = egui::RichText::new(page.open.frontmatter.title.clone())
+            .text_style(egui::TextStyle::Button);
         let id = page.open.id;
         let mut open = true;
+        // Heading is 30px, which makes the stock title bar bulky. A button-sized
+        // title plus a short vertical margin keeps the bar to the interact-size floor.
+        let frame = egui::Frame::window(ui.style()).inner_margin(egui::Margin::symmetric(8, 2));
         egui::Window::new(title)
             .id(egui::Id::new(("floating_page", id)))
+            .frame(frame)
             .open(&mut open)
             .resizable(true)
             .default_size([520.0, 420.0])

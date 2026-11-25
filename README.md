@@ -101,15 +101,15 @@ A new project has this structure:
 my-project/
 ├── project.json
 ├── index.md
-├── nations/
+├── Nations/
 │   └── index.md
-├── players/
+├── Players/
 │   └── index.md
-└── events/
+└── Events/
     └── index.md
 ```
 
-Nation, player, and event pages are filed in `nations/`, `players/`, and `events/`. Notes are filed in the folder selected in the tree.
+Nation, player, and event pages are filed in `Nations/`, `Players/`, and `Events/`. Notes are filed in the folder selected in the tree.
 
 ## Building and running
 

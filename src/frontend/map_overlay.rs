@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use egui::{Color32, ColorImage, Context, Painter, Pos2, Rect, Stroke, TextureHandle, TextureOptions};
 use uuid::Uuid;
 
-use crate::backend::{ChunkPos, ClaimLayer};
+use crate::backend::{BlockPos, BlockRect, ChunkPos, ClaimLayer, CHUNK_BLOCKS};
 use crate::frontend::map_state::Projection;
 
 /// Chunks along one side of an overlay tile.
@@ -51,6 +51,15 @@ impl EdgeSide {
     fn horizontal(self) -> bool {
         matches!(self, Self::North | Self::South)
     }
+
+    fn opposite(self) -> Self {
+        match self {
+            Self::North => Self::South,
+            Self::South => Self::North,
+            Self::West => Self::East,
+            Self::East => Self::West,
+        }
+    }
 }
 
 /// A straight run of chunk edges with the same owner and side.
@@ -69,11 +78,20 @@ struct OverlayTile {
     edges: Vec<Edge>,
 }
 
+struct DetailTile {
+    texture: TextureHandle,
+    /// Edges in block coordinates.
+    edges: Vec<Edge>,
+}
+
 /// Cached textures and outlines for one open map.
 #[derive(Default)]
 pub(crate) struct OverlayCache {
     tiles: BTreeMap<TileKey, OverlayTile>,
     dirty: BTreeSet<TileKey>,
+    /// Chunks whose blocks are not all the same owner.
+    details: BTreeMap<ChunkPos, DetailTile>,
+    detail_dirty: BTreeSet<ChunkPos>,
     colors: BTreeMap<Uuid, [u8; 3]>,
 }
 
@@ -92,10 +110,27 @@ impl OverlayCache {
         }
     }
 
+    /// Rebuild the block texture for a chunk whose overrides changed.
+    pub(crate) fn mark_detail(&mut self, chunk: ChunkPos) {
+        self.mark_chunk(chunk);
+        self.detail_dirty.insert(chunk);
+        for neighbor in [
+            ChunkPos::new(chunk.x - 1, chunk.z),
+            ChunkPos::new(chunk.x + 1, chunk.z),
+            ChunkPos::new(chunk.x, chunk.z - 1),
+            ChunkPos::new(chunk.x, chunk.z + 1),
+        ] {
+            self.detail_dirty.insert(neighbor);
+        }
+    }
+
     /// Rebuild every tile that holds a claim.
     pub(crate) fn mark_layer(&mut self, layer: &ClaimLayer) {
         for (pos, _) in layer.iter() {
             self.dirty.insert(tile_of(pos));
+        }
+        for (pos, _) in layer.iter_blocks() {
+            self.mark_detail(pos.chunk());
         }
     }
 
@@ -104,6 +139,7 @@ impl OverlayCache {
         if &self.colors != colors {
             self.colors.clone_from(colors);
             self.dirty.extend(self.tiles.keys().copied());
+            self.detail_dirty.extend(self.details.keys().copied());
         }
     }
 
@@ -116,6 +152,16 @@ impl OverlayCache {
                 }
                 None => {
                     self.tiles.remove(&key);
+                }
+            }
+        }
+        for chunk in std::mem::take(&mut self.detail_dirty) {
+            match build_detail(ctx, layer, &self.colors, chunk) {
+                Some(tile) => {
+                    self.details.insert(chunk, tile);
+                }
+                None => {
+                    self.details.remove(&chunk);
                 }
             }
         }
@@ -141,7 +187,23 @@ impl OverlayCache {
             painter.image(tile.texture.id(), rect, full_uv, Color32::WHITE);
             if outlines {
                 for edge in &tile.edges {
-                    paint_edge(painter, projection, canvas, edge, self.color(edge.owner));
+                    paint_edge(painter, projection, canvas, edge, self.color(edge.owner), true);
+                }
+            }
+        }
+        let block_px = projection.chunk_screen_size() / f64::from(CHUNK_BLOCKS);
+        let block_outlines = block_px >= MIN_OUTLINE_CHUNK_PX;
+        for (&chunk, tile) in &self.details {
+            let min = projection.chunk_to_screen(f64::from(chunk.x), f64::from(chunk.z));
+            let max = projection.chunk_to_screen(f64::from(chunk.x + 1), f64::from(chunk.z + 1));
+            let rect = Rect::from_min_max(min, max);
+            if !rect.intersects(canvas) {
+                continue;
+            }
+            painter.image(tile.texture.id(), rect, full_uv, Color32::WHITE);
+            if block_outlines {
+                for edge in &tile.edges {
+                    paint_edge(painter, projection, canvas, edge, self.color(edge.owner), false);
                 }
             }
         }
@@ -171,7 +233,9 @@ fn build_tile(
     let z_min = key.1 * TILE_CHUNKS;
     let chunks: Vec<(ChunkPos, Uuid)> = layer
         .in_rows(z_min, z_min + TILE_CHUNKS - 1)
-        .filter(|(pos, _)| pos.x >= x_min && pos.x < x_min + TILE_CHUNKS)
+        .filter(|(pos, _)| {
+            pos.x >= x_min && pos.x < x_min + TILE_CHUNKS && !layer.has_block_detail(*pos)
+        })
         .collect();
     if chunks.is_empty() {
         return None;
@@ -203,6 +267,9 @@ pub(crate) fn compute_edges(layer: &ClaimLayer, chunks: &[(ChunkPos, Uuid)]) -> 
     let mut raw = Vec::new();
     for &(pos, owner) in chunks {
         for side in EdgeSide::ALL {
+            if layer.has_block_detail(side.neighbor(pos)) {
+                continue;
+            }
             if layer.get(side.neighbor(pos)) != Some(owner) {
                 raw.push(Edge {
                     pos,
@@ -214,6 +281,83 @@ pub(crate) fn compute_edges(layer: &ClaimLayer, chunks: &[(ChunkPos, Uuid)]) -> 
         }
     }
     merge_edges(raw)
+}
+
+fn build_detail(
+    ctx: &Context,
+    layer: &ClaimLayer,
+    colors: &BTreeMap<Uuid, [u8; 3]>,
+    chunk: ChunkPos,
+) -> Option<DetailTile> {
+    if !layer.has_block_detail(chunk) {
+        return None;
+    }
+    let rect = BlockRect::of_chunk(chunk)?;
+    let side = usize::try_from(CHUNK_BLOCKS).unwrap_or(16);
+    let mut rgba = vec![0_u8; side * side * 4];
+    for pos in rect.positions() {
+        let Some(owner) = layer.block_owner(pos) else {
+            continue;
+        };
+        let [red, green, blue] = colors.get(&owner).copied().unwrap_or(ORPHAN_COLOR);
+        let column = usize::try_from(pos.x.rem_euclid(CHUNK_BLOCKS)).unwrap_or(0);
+        let row = usize::try_from(pos.z.rem_euclid(CHUNK_BLOCKS)).unwrap_or(0);
+        let index = (row * side + column) * 4;
+        rgba[index..index + 4].copy_from_slice(&[red, green, blue, FILL_ALPHA]);
+    }
+    let image = ColorImage::from_rgba_unmultiplied([side, side], &rgba);
+    let texture = ctx.load_texture(
+        format!("map_blocks_{}_{}", chunk.x, chunk.z),
+        image,
+        TextureOptions::NEAREST,
+    );
+    Some(DetailTile {
+        texture,
+        edges: block_edges(layer, rect),
+    })
+}
+
+/// Block-resolution outlines for one detailed chunk, including the facing edge
+/// of a uniform neighbor so that side is not left undrawn.
+fn block_edges(layer: &ClaimLayer, rect: BlockRect) -> Vec<Edge> {
+    let mut raw = Vec::new();
+    for pos in rect.positions() {
+        let owner = layer.block_owner(pos);
+        for side in EdgeSide::ALL {
+            let neighbor = block_neighbor(pos, side);
+            let neighbor_owner = layer.block_owner(neighbor);
+            if let Some(owner) = owner {
+                if neighbor_owner != Some(owner) {
+                    raw.push(Edge {
+                        pos: ChunkPos::new(pos.x, pos.z),
+                        side,
+                        len: 1,
+                        owner,
+                    });
+                }
+            }
+            if let Some(neighbor_owner) = neighbor_owner {
+                if owner != Some(neighbor_owner) && !layer.has_block_detail(neighbor.chunk()) {
+                    raw.push(Edge {
+                        pos: ChunkPos::new(neighbor.x, neighbor.z),
+                        side: side.opposite(),
+                        len: 1,
+                        owner: neighbor_owner,
+                    });
+                }
+            }
+        }
+    }
+    merge_edges(raw)
+}
+
+fn block_neighbor(pos: BlockPos, side: EdgeSide) -> BlockPos {
+    match side {
+        EdgeSide::North => BlockPos::new(pos.x, pos.z - 1),
+        EdgeSide::South => BlockPos::new(pos.x, pos.z + 1),
+        EdgeSide::West => BlockPos::new(pos.x - 1, pos.z),
+        EdgeSide::East => BlockPos::new(pos.x + 1, pos.z),
+    }
 }
 
 fn merge_edges(mut raw: Vec<Edge>) -> Vec<Edge> {
@@ -244,19 +388,37 @@ fn merge_edges(mut raw: Vec<Edge>) -> Vec<Edge> {
     merged
 }
 
-fn paint_edge(painter: &Painter, projection: &Projection, canvas: Rect, edge: &Edge, color: [u8; 3]) {
+fn paint_edge(
+    painter: &Painter,
+    projection: &Projection,
+    canvas: Rect,
+    edge: &Edge,
+    color: [u8; 3],
+    chunk_units: bool,
+) {
     let (x, z) = (f64::from(edge.pos.x), f64::from(edge.pos.z));
     let len = f64::from(edge.len);
     let half = OUTLINE_WIDTH / 2.0;
-    // Endpoints in chunk corners, plus a screen-space nudge toward the owned side.
+    // Endpoints in cell corners, plus a screen-space nudge toward the owned side.
     let (start, end, inset) = match edge.side {
         EdgeSide::North => ((x, z), (x + len, z), egui::vec2(0.0, half)),
         EdgeSide::South => ((x, z + 1.0), (x + len, z + 1.0), egui::vec2(0.0, -half)),
         EdgeSide::West => ((x, z), (x, z + len), egui::vec2(half, 0.0)),
         EdgeSide::East => ((x + 1.0, z), (x + 1.0, z + len), egui::vec2(-half, 0.0)),
     };
-    let from = projection.chunk_to_screen(start.0, start.1) + inset;
-    let to = projection.chunk_to_screen(end.0, end.1) + inset;
+    let (from, to) = if chunk_units {
+        (
+            projection.chunk_to_screen(start.0, start.1),
+            projection.chunk_to_screen(end.0, end.1),
+        )
+    } else {
+        (
+            projection.block_to_screen(start.0, start.1),
+            projection.block_to_screen(end.0, end.1),
+        )
+    };
+    let from = from + inset;
+    let to = to + inset;
     if !Rect::from_two_pos(from, to).expand(OUTLINE_WIDTH).intersects(canvas) {
         return;
     }

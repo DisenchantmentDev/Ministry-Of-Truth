@@ -28,13 +28,13 @@ pub enum EditMode {
     Edit,
     Preview,
     Split,
-    /// Styled source editing (live markdown rendering).
+    /// Styled source editing, shown as the "Edit" tab.
     Live,
 }
 
 impl Default for EditMode {
     fn default() -> Self {
-        Self::Split
+        Self::Live
     }
 }
 
@@ -134,7 +134,7 @@ impl Default for Session {
     fn default() -> Self {
         Self {
             open: None,
-            mode: EditMode::Split,
+            mode: EditMode::default(),
             nation_tab: NationTab::Notes,
             dialog: Dialog::None,
             status: String::new(),

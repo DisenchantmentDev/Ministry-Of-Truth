@@ -33,6 +33,35 @@ pub enum Dialog {
     DeleteFolder {
         dir: PathBuf,
     },
+    ImportMap(ImportMapForm),
+    DeleteMap {
+        slug: String,
+        name: String,
+    },
+}
+
+/// Fields of the "Import map" dialog. Numbers stay as text until submitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportMapForm {
+    pub name: String,
+    pub image: Option<PathBuf>,
+    pub scale: String,
+    pub origin_x: String,
+    pub origin_z: String,
+    pub dimension: String,
+}
+
+impl Default for ImportMapForm {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            image: None,
+            scale: "1".to_owned(),
+            origin_x: "0".to_owned(),
+            origin_z: "0".to_owned(),
+            dimension: "Overworld".to_owned(),
+        }
+    }
 }
 
 impl Default for Dialog {
@@ -52,6 +81,8 @@ pub enum UiAction {
     CloseFloating(Uuid),
     OpenFolder(PathBuf),
     ShowTimeline,
+    /// Open a map (by folder name) in the Map view.
+    ShowMap(String),
     Save,
     CloseProject,
     OpenProject(PathBuf),
@@ -80,5 +111,7 @@ pub enum UiAction {
     },
     SubmitDeletePage(Uuid),
     SubmitDeleteFolder(PathBuf),
+    SubmitImportMap(ImportMapForm),
+    SubmitDeleteMap(String),
     OpenDialog(Dialog),
 }

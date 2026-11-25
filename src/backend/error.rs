@@ -34,6 +34,12 @@ impl From<serde_json::Error> for MotError {
     }
 }
 
+impl From<image::ImageError> for MotError {
+    fn from(value: image::ImageError) -> Self {
+        Self::new(value.to_string())
+    }
+}
+
 impl From<serde_yml::Error> for MotError {
     fn from(value: serde_yml::Error) -> Self {
         Self::new(value.to_string())

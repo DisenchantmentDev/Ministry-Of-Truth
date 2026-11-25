@@ -1,6 +1,7 @@
 use crate::app::Application;
 use crate::frontend::dialogs;
 use crate::frontend::editor;
+use crate::frontend::map_view;
 use crate::frontend::floating;
 use crate::frontend::session::{MainView, Session};
 use crate::frontend::timeline_view;
@@ -17,7 +18,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut Application) -> Vec<UiAction> {
             .resizable(true)
             .default_size(240.0)
             .show(ui, |ui| {
-                actions.push(tree::show(ui, project, open_id, app.main_view));
+                let active_map = app.session.map.as_ref().map(|map| map.slug.as_str());
+                actions.push(tree::show(ui, project, open_id, app.main_view, active_map));
             });
         egui::Panel::bottom("status").show(ui, |ui| {
             let status = if app.session.status.is_empty() {
@@ -45,6 +47,7 @@ fn central(
 ) -> UiAction {
     match main_view {
         MainView::Timeline => timeline_view::show(ui, project),
+        MainView::Map => map_view::show(ui, project, session),
         MainView::Page => show_page(ui, project, session),
     }
 }

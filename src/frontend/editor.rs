@@ -2,7 +2,9 @@ use std::path::Path;
 
 use egui_commonmark::CommonMarkCache;
 
-use crate::backend::{PageData, PageKind, Project, TemplateKind};
+use uuid::Uuid;
+
+use crate::backend::{PageData, PageKind, Project, TemplateKind, CHUNK_BLOCKS};
 use crate::frontend::fields;
 use crate::frontend::layout::{centered_column, CONTENT_WIDTH};
 use crate::frontend::live_markdown::{self, LiveMarkdownState};
@@ -71,12 +73,14 @@ fn page_contents(
 }
 
 fn header(ui: &mut egui::Ui, project: &Project, open: &mut OpenPage) -> UiAction {
+    let id = open.frontmatter.id;
     match &mut open.frontmatter.data {
         PageData::Note => UiAction::None,
         PageData::Nation(meta) => {
             let leaders = fields::string_list(ui, "leaders", "Leaders", &mut meta.leaders, project);
             fields::plain_text(ui, "Location", &mut meta.location);
             fields::optional_day(ui, "Founded day", &mut meta.founded);
+            fields::nation_color(ui, id, meta);
             leaders
         }
         PageData::Player(meta) => {
@@ -132,12 +136,49 @@ fn nation_body(
         {
             *nation_tab = NationTab::Relations;
         }
+        if ui
+            .selectable_label(*nation_tab == NationTab::Map, "Map")
+            .clicked()
+        {
+            *nation_tab = NationTab::Map;
+        }
     });
     match *nation_tab {
         NationTab::Notes => notes(ui, project, open, mode, cache, live_markdown),
         NationTab::Events => nation_events(ui, project, &open.frontmatter.title),
         NationTab::Relations => nation_relations(ui, project, open),
+        NationTab::Map => nation_maps(ui, project, open.frontmatter.id),
     }
+}
+
+/// Territory this nation holds on each map, with a shortcut to open the map.
+fn nation_maps(ui: &mut egui::Ui, project: &Project, nation: Uuid) -> UiAction {
+    let mut action = UiAction::None;
+    if project.maps().is_empty() {
+        ui.label(
+            egui::RichText::new("No maps yet. Import one with Import under Maps in the tree.")
+                .weak(),
+        );
+        return action;
+    }
+    for map in project.maps() {
+        ui.horizontal(|ui| {
+            if ui.button(&map.meta.name).on_hover_text("Open map").clicked() {
+                action = UiAction::ShowMap(map.slug.clone());
+            }
+            match map.counts.get(&nation) {
+                Some(chunks) => {
+                    let side = u64::try_from(CHUNK_BLOCKS).unwrap_or(16);
+                    let blocks = u64::try_from(*chunks).unwrap_or(0) * side * side;
+                    ui.label(format!("{chunks} chunks, {blocks} blocks²"));
+                }
+                None => {
+                    ui.label(egui::RichText::new("no claims").weak());
+                }
+            }
+        });
+    }
+    action
 }
 
 fn nation_events(ui: &mut egui::Ui, project: &Project, nation: &str) -> UiAction {

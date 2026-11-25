@@ -8,8 +8,8 @@ use crate::backend::{
     instantiate, parse_start_date, Frontmatter, MotError, Page, Project, Result, TemplateKind,
 };
 use crate::frontend::{
-    pick_folder, show_launch, show_project, Dialog, FloatingPage, MainView, NationTab, OpenPage,
-    Session, UiAction,
+    pick_folder, show_launch, show_project, Dialog, FloatingPage, ImportMapForm, MainView,
+    MapSession, NationTab, OpenPage, Session, UiAction,
 };
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -18,6 +18,7 @@ pub struct Application {
     state: WindowState,
     project_dir: PathBuf,
     open_page_id: Option<Uuid>,
+    open_map_slug: Option<String>,
     pub(crate) main_view: MainView,
     #[serde(skip)]
     pub(crate) project: Option<Project>,
@@ -38,6 +39,7 @@ impl Default for Application {
             state: WindowState::Landing,
             project_dir: PathBuf::new(),
             open_page_id: None,
+            open_map_slug: None,
             main_view: MainView::Page,
             project: None,
             session: Session::default(),
@@ -93,11 +95,27 @@ impl Application {
                     }
                     self.main_view = saved_view;
                 }
+                self.restore_map(saved_view);
             }
             Err(err) => {
                 self.state = WindowState::Landing;
                 self.session.status = err.to_string();
             }
+        }
+    }
+
+    /// Reopen the map that was showing when the app last closed.
+    fn restore_map(&mut self, saved_view: MainView) {
+        if saved_view == MainView::Map {
+            if let Some(slug) = self.open_map_slug.clone() {
+                match self.show_map(&slug) {
+                    Ok(()) => return,
+                    Err(err) => self.session.status = err.to_string(),
+                }
+            }
+        }
+        if self.main_view == MainView::Map {
+            self.main_view = MainView::Page;
         }
     }
 
@@ -173,6 +191,7 @@ impl Application {
             }
             UiAction::Save => self.save_with_status(),
             UiAction::ShowTimeline => self.show_timeline(),
+            UiAction::ShowMap(slug) => self.show_map(&slug),
             UiAction::OpenPage(id) => self.open_page(id),
             UiAction::OpenFloating(id) => self.open_floating(id),
             UiAction::CloseFloating(id) => self.close_floating(id),
@@ -191,19 +210,92 @@ impl Application {
             UiAction::SubmitRenameFolder { dir, name } => self.rename_folder(dir, name),
             UiAction::SubmitDeletePage(id) => self.delete_page(id),
             UiAction::SubmitDeleteFolder(path) => self.delete_folder(path),
+            UiAction::SubmitImportMap(form) => self.import_map(&form),
+            UiAction::SubmitDeleteMap(slug) => self.delete_map(&slug),
         }
     }
 
     fn save_with_status(&mut self) -> Result<()> {
         self.save_open()?;
         self.save_all_floating()?;
+        self.save_map()?;
         self.session.status = "Saved.".to_owned();
         Ok(())
     }
 
     fn show_timeline(&mut self) -> Result<()> {
         self.save_open()?;
+        self.save_map()?;
         self.main_view = MainView::Timeline;
+        Ok(())
+    }
+
+    /// Write the open map's calibration and claims if they changed.
+    fn save_map(&mut self) -> Result<()> {
+        let (Some(project), Some(map)) = (self.project.as_mut(), self.session.map.as_mut()) else {
+            return Ok(());
+        };
+        if !map.dirty {
+            return Ok(());
+        }
+        project.save_map(&map.slug, &map.meta, map.editor.layer())?;
+        map.dirty = false;
+        Ok(())
+    }
+
+    fn show_map(&mut self, slug: &str) -> Result<()> {
+        self.save_open()?;
+        self.save_map()?;
+        if self.session.map.as_ref().is_none_or(|map| map.slug != slug) {
+            let project = self
+                .project
+                .as_ref()
+                .ok_or_else(|| MotError::new("no project is open"))?;
+            let doc = project.load_map(slug)?;
+            let image = project.map_dir(slug)?.join(&doc.meta.image);
+            self.session.map = Some(MapSession::open(doc, &image)?);
+        }
+        self.open_map_slug = Some(slug.to_owned());
+        self.main_view = MainView::Map;
+        Ok(())
+    }
+
+    fn import_map(&mut self, form: &ImportMapForm) -> Result<()> {
+        let image = form
+            .image
+            .as_ref()
+            .ok_or_else(|| MotError::new("choose an image first"))?;
+        let number = |text: &str, what: &str| {
+            text.trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| MotError::new(format!("{what} must be a number")))
+        };
+        let scale = number(&form.scale, "Pixels per block")?;
+        let origin = [number(&form.origin_x, "X")?, number(&form.origin_z, "Z")?];
+        let slug = self.require_project()?.create_map(
+            &form.name,
+            image,
+            scale,
+            origin,
+            &form.dimension,
+        )?;
+        self.show_map(&slug)?;
+        self.session.status = "Imported map.".to_owned();
+        Ok(())
+    }
+
+    fn delete_map(&mut self, slug: &str) -> Result<()> {
+        if self.session.map.as_ref().is_some_and(|map| map.slug == slug) {
+            self.session.map = None;
+            self.open_map_slug = None;
+            if self.main_view == MainView::Map {
+                self.main_view = MainView::Page;
+            }
+        }
+        self.require_project()?.delete_map(slug)?;
+        self.session.status = "Deleted map.".to_owned();
         Ok(())
     }
 
@@ -280,6 +372,7 @@ impl Application {
 
     fn open_page(&mut self, id: Uuid) -> Result<()> {
         self.save_open()?;
+        self.save_map()?;
         let page = self.load_existing(id)?;
         self.install_page(page);
         Ok(())
@@ -372,8 +465,11 @@ impl Application {
     fn close_project(&mut self) -> Result<()> {
         self.save_open()?;
         self.save_all_floating()?;
+        self.save_map()?;
         self.project = None;
         self.session.open = None;
+        self.session.map = None;
+        self.open_map_slug = None;
         self.session.floating.clear();
         self.session.dialog = Dialog::None;
         self.state = WindowState::Landing;
@@ -384,6 +480,7 @@ impl Application {
 
     fn open_project(&mut self, path: PathBuf) -> Result<()> {
         self.save_open()?;
+        self.save_map()?;
         let project = Project::open(&path)?;
         self.session.status = format!("Opened {}.", project.meta.name);
         self.set_project(project)
@@ -391,6 +488,7 @@ impl Application {
 
     fn create_project(&mut self, folder: PathBuf, name: String, date: String) -> Result<()> {
         self.save_open()?;
+        self.save_map()?;
         let start = parse_start_date(&date)?;
         let project = Project::create(&folder, &name, start)?;
         self.session.status = "Project created.".to_owned();
@@ -407,6 +505,8 @@ impl Application {
         self.project = Some(project);
         self.state = WindowState::Project;
         self.session.open = None;
+        self.session.map = None;
+        self.open_map_slug = None;
         self.session.floating.clear();
         self.session.dialog = Dialog::None;
         self.main_view = MainView::Page;

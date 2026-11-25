@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::backend::{Frontmatter, Page};
 use crate::frontend::live_markdown::LiveMarkdownState;
+use crate::frontend::map_state::MapSession;
 use crate::frontend::Dialog;
 
 /// Which markdown surface is in the main pane.
@@ -12,6 +13,7 @@ use crate::frontend::Dialog;
 pub enum MainView {
     Page,
     Timeline,
+    Map,
 }
 
 impl Default for MainView {
@@ -42,6 +44,7 @@ pub enum NationTab {
     Notes,
     Events,
     Relations,
+    Map,
 }
 
 impl Default for NationTab {
@@ -121,6 +124,8 @@ pub struct Session {
     pub cache: CommonMarkCache,
     pub live_markdown: LiveMarkdownState,
     pub floating: Vec<FloatingPage>,
+    /// The map open in the Map view, if any.
+    pub map: Option<MapSession>,
     pub new_name: String,
     pub new_date: String,
 }
@@ -136,6 +141,7 @@ impl Default for Session {
             cache: CommonMarkCache::default(),
             live_markdown: LiveMarkdownState::default(),
             floating: Vec::new(),
+            map: None,
             new_name: String::new(),
             new_date: String::new(),
         }
